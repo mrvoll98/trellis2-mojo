@@ -13,4 +13,9 @@ for d in trellis2 o-voxel configs; do
     rm -rf "${ROOT:?}/$d"
     cp -R "$TMP/upstream/$d" "$ROOT/$d"
 done
-echo "Hentet trellis2/, o-voxel/ og configs/ @ ${UPSTREAM_SHA}"
+# Mac-kompatibilitets-patchene (9 filer: CPU-conv/attention-backends,
+# ingen harde .cuda()-kall, rembg-guard, stub-hook for mesh-
+# ekstraksjon) — paritetstestene er verifisert mot NØYAKTIG denne
+# tilstanden (hentet + patchet == fasiten suiten var grønn mot)
+(cd "$ROOT" && patch -p1 -s < scripts/upstream_mac_compat.patch)
+echo "Hentet trellis2/, o-voxel/ og configs/ @ ${UPSTREAM_SHA} (+ mac-compat-patch)"
