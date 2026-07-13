@@ -111,14 +111,38 @@ thresholds, so compare runs structurally (bbox, nearest-neighbor
 distances), never exact V/F counts. Same seed + same settings is
 bit-reproducible end to end.
 
-## License and attribution
+## License and acknowledgements
 
-- Upstream [TRELLIS.2](https://github.com/microsoft/TRELLIS.2)
-  (Microsoft, MIT — see `LICENSE`): the Mojo port mirrors its
-  inference semantics; the reference code is fetched by
+The Mojo port is released under the MIT license (`LICENSE`). Every
+upstream it builds on is MIT (or Apache-2.0) — audited before
+publication:
+
+- **[TRELLIS.2](https://github.com/microsoft/TRELLIS.2) by Microsoft
+  Research** (MIT) — the original model and codebase. The port mirrors
+  its inference semantics op for op; the reference code is fetched by
   `scripts/fetch_upstream.sh` for the parity tests, not vendored.
-- [CuMesh](https://github.com/JeffreyXiang/CuMesh) (MIT): the mesh
-  post-processing and remeshing algorithms were re-implemented in Mojo
-  from its published sources (read as reference only — no CUDA code is
-  used or shipped).
-- The Mojo port itself is released under the same MIT license.
+- **DINOv3 by Meta** — image conditioning. The pure-Mojo
+  reimplementation mirrors the Hugging Face
+  [transformers](https://github.com/huggingface/transformers)
+  implementation (Apache-2.0). The weights are downloaded from
+  Hugging Face by the user and carry Meta's own DINOv3 license.
+- **[CuMesh](https://github.com/JeffreyXiang/CuMesh) by Jianfeng
+  Xiang** (MIT) — the mesh cleanup (hole filling, non-manifold repair,
+  component removal, orientation unify) and narrow-band
+  dual-contouring remesh algorithms, re-implemented in Mojo from the
+  published sources (read as reference only — no CUDA code is used or
+  shipped).
+- **[trellis-mac](https://github.com/shivampkumar/trellis-mac) by
+  @shivampkumar** (MIT) — the working MPS port used as the structural
+  A/B reference throughout, and the origin of the mac-compat patch set
+  and the vendored pure-torch mesh-extraction stub in `tests/parity/`.
+- **@pedronaugusto** — the mtlmesh / mtlbvh / mtldiffrast Metal ports
+  (MIT) whose bundled CuMesh sources were the readable reference for
+  the remeshing and cleanup semantics.
+- **RMBG-2.0 (BRIA AI) is deliberately NOT used**: its license is
+  non-commercial, so the runner requires pre-cut RGBA input instead of
+  shipping background removal.
+
+Model weights (microsoft/TRELLIS.2-4B, microsoft/TRELLIS-image-large,
+facebook/dinov3-vitl16) are not distributed with this repo — they are
+fetched from Hugging Face by the user under their respective licenses.
