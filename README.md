@@ -121,11 +121,15 @@ publication:
   Research** (MIT) — the original model and codebase. The port mirrors
   its inference semantics op for op; the reference code is fetched by
   `scripts/fetch_upstream.sh` for the parity tests, not vendored.
-- **DINOv3 by Meta** — image conditioning. The pure-Mojo
-  reimplementation mirrors the Hugging Face
+- **[DINOv3](https://github.com/facebookresearch/dinov3) by Meta** —
+  image conditioning. The pure-Mojo reimplementation mirrors the
+  Hugging Face
   [transformers](https://github.com/huggingface/transformers)
-  implementation (Apache-2.0). The weights are downloaded from
-  Hugging Face by the user and carry Meta's own DINOv3 license.
+  implementation (Apache-2.0). The weights
+  ([facebook/dinov3-vitl16-pretrain-lvd1689m](https://huggingface.co/facebook/dinov3-vitl16-pretrain-lvd1689m))
+  are downloaded from Hugging Face by the user and carry the
+  [DINOv3 License](https://ai.meta.com/resources/models-and-libraries/dinov3-license/)
+  (Meta's own, not open source).
 - **[CuMesh](https://github.com/JeffreyXiang/CuMesh) by Jianfeng
   Xiang** (MIT) — the mesh cleanup (hole filling, non-manifold repair,
   component removal, orientation unify) and narrow-band
@@ -136,12 +140,14 @@ publication:
   @shivampkumar** (MIT) — the working MPS port used as the structural
   A/B reference throughout, and the origin of the mac-compat patch set
   and the vendored pure-torch mesh-extraction stub in `tests/parity/`.
-- **@pedronaugusto** — the mtlmesh / mtlbvh / mtldiffrast Metal ports
-  (MIT) whose bundled CuMesh sources were the readable reference for
-  the remeshing and cleanup semantics.
-- **RMBG-2.0 (BRIA AI) is deliberately NOT used**: its license is
-  non-commercial, so the runner requires pre-cut RGBA input instead of
-  shipping background removal.
+- **[@pedronaugusto](https://github.com/pedronaugusto)** — the
+  mtlmesh / mtlbvh / mtldiffrast Metal ports (MIT) whose bundled
+  CuMesh sources were the readable reference for the remeshing and
+  cleanup semantics.
+- **[RMBG-2.0](https://huggingface.co/briaai/RMBG-2.0) (BRIA AI) is
+  deliberately NOT used**: its license (bria-rmbg-2.0, see the model
+  card) is non-commercial, so the runner requires pre-cut RGBA input
+  instead of shipping background removal.
 
 Model weights (microsoft/TRELLIS.2-4B, microsoft/TRELLIS-image-large,
 facebook/dinov3-vitl16) are not distributed with this repo — they are
