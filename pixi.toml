@@ -1,0 +1,52 @@
+[workspace]
+channels = ["https://conda.modular.com/max", "conda-forge"]
+name = "trellis-mojo"
+platforms = ["osx-arm64"]
+version = "0.1.0"
+
+[tasks]
+test-sparse = "mojo run -I . tests/parity/test_sparse_basic.mojo"
+test-parity = "mojo run -I . tests/parity/parity_sparse_vs_torch.mojo"
+test-flow-euler = "mojo run -I . tests/parity/parity_flow_euler_vs_torch.mojo"
+test-wp4 = "mojo run -I . tests/parity/parity_wp4_vs_torch.mojo"
+test-wp5 = "mojo run -I . tests/parity/parity_wp5_vs_torch.mojo"
+test-wp6 = "mojo run -I . tests/parity/parity_wp6_vs_torch.mojo"
+test-wp7 = "mojo run -I . tests/parity/parity_wp7_vs_torch.mojo"
+test-wp8 = "mojo run -I . tests/parity/parity_wp8_vs_torch.mojo"
+test-wp9 = "mojo run -I . tests/parity/parity_wp9_vs_torch.mojo"
+# real checkpoints from the local HF cache (~10 GB read per run) -> not in test-all
+test-real = "mojo run -I . tests/parity/parity_real_ckpt_vs_torch.mojo"
+# DINOv3 conditioning vs the original extractor (loads 2x300M from HF cache) -> not in test-all
+test-cond = "mojo run -I . tests/parity/parity_cond_vs_torch.mojo"
+# WP12: pure-Mojo safetensors/JSON loading vs ckpt_io.py, bit-identical on all 8 ckpts (~14 GB read) -> not in test-all
+test-io = "mojo run -I . tests/parity/parity_io_vs_ckpt_io.mojo"
+test-mesh = "mojo run -I . tests/parity/parity_mesh_vs_torch.mojo"
+# WP13: pure-Mojo DINOv3 vs transformers on a small random config (no HF cache) -> in test-all
+test-wp13 = "mojo run -I . tests/parity/parity_wp13_vs_torch.mojo"
+# WP14: pure-Mojo image IO/preprocess vs PIL, bit-exact (no HF cache) -> in test-all
+test-wp14 = "mojo run -I . tests/parity/parity_wp14_vs_torch.mojo"
+# WP15 (fase 2, ADR 0008): trilinear grid sampling + vertex normals + GLB round-trip -> in test-all
+test-wp15 = "mojo run -I . tests/parity/parity_wp15_vs_torch.mojo"
+# WP16 (fase 2): small-hole filling for the GLB export, pure-Mojo tests -> in test-all
+test-wp16 = "mojo run -I . tests/parity/test_wp16_holes.mojo"
+# WP18 (fase 2): narrow-band dual-contouring remesh, pure-Mojo tests -> in test-all
+test-wp18 = "mojo run -I . tests/parity/test_wp18_remesh.mojo"
+# WP11: GPU linear (tiled Metal GEMM) vs CPU linear, tolerance parity -> in test-all (needs the Metal GPU)
+test-wp11 = "mojo run -I . tests/parity/parity_wp11_gpu_linear.mojo"
+# WP11 step 3: GPU dense SDPA (GEMM composition) vs CPU varlen_sdpa -> in test-all (needs the Metal GPU)
+test-wp11-attn = "mojo run -I . tests/parity/parity_wp11_gpu_attn.mojo"
+# WP11 step 6: GPU sparse conv (gather kernel) vs CPU SparseConv3d -> in test-all (needs the Metal GPU)
+test-wp11-conv = "mojo run -I . tests/parity/parity_wp11_gpu_conv.mojo"
+bench = "mojo run -I . benchmarks/bench_wp10.mojo"
+# end-to-end runner (WP9 del 3 steg 5): pixi run e2e -- <image.png> [--seed N] [--steps N] [--out prefix] [--no-tex]
+e2e = "mojo run -I . run_image_to_3d.mojo"
+test-all = "mojo run -I . tests/parity/test_sparse_basic.mojo && mojo run -I . tests/parity/parity_sparse_vs_torch.mojo && mojo run -I . tests/parity/parity_flow_euler_vs_torch.mojo && mojo run -I . tests/parity/parity_wp4_vs_torch.mojo && mojo run -I . tests/parity/parity_wp5_vs_torch.mojo && mojo run -I . tests/parity/parity_wp6_vs_torch.mojo && mojo run -I . tests/parity/parity_wp7_vs_torch.mojo && mojo run -I . tests/parity/parity_wp8_vs_torch.mojo && mojo run -I . tests/parity/parity_wp9_vs_torch.mojo && mojo run -I . tests/parity/parity_mesh_vs_torch.mojo && mojo run -I . tests/parity/parity_wp13_vs_torch.mojo && mojo run -I . tests/parity/parity_wp14_vs_torch.mojo && mojo run -I . tests/parity/parity_wp15_vs_torch.mojo && mojo run -I . tests/parity/test_wp16_holes.mojo && mojo run -I . tests/parity/test_wp18_remesh.mojo && mojo run -I . tests/parity/parity_wp11_gpu_linear.mojo && mojo run -I . tests/parity/parity_wp11_gpu_attn.mojo && mojo run -I . tests/parity/parity_wp11_gpu_conv.mojo"
+
+[dependencies]
+modular = ">=26.4.0,<27"
+pytorch = ">=2.12.0,<3"
+numpy = ">=2.5.1,<3"
+tqdm = ">=4.68.3,<5"
+easydict = ">=1.13,<2"
+safetensors = ">=0.8.0,<0.9"
+torchvision = ">=0.27"

@@ -212,3 +212,13 @@ __pycache__/
 baselines/
 *.log
 
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+
+# Mojo-port: genererte artefakter og lokalt rusk (regenereres med
+# pixi run e2e -- ... ; se README.md)
+outputs/
+.DS_Store
+nohup.out
+*.pdf
