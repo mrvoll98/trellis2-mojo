@@ -1332,8 +1332,15 @@ som har generert ekte meshes på denne maskinen: `olav_statue_v*.obj`,
   TRELLIS.2/` er upstream @75fbf01 med 8 filer Mac-patchet — MERK: deres
   sdpa-patch i sparse full_attn null-padder uten maske (samme stille bug
   som funn 1 her; ufarlig i praksis fordi CFG-grenene kjøres separat med
-  B=1). `trellis2/`-kopien i DETTE repoet er fortsatt uberørt original —
-  bruk den som fasit, ikke trellis-mac-kopien.
+  B=1). `trellis2/`-kopien i DETTE repoet er fasiten — MEN
+  IKKE helt uberørt (oppdaget 2026-07-13 under GitHub-pakkingen): NI
+  filer bærer CPU/MPS-kompatibilitets-patcher (CPU-conv/attention-
+  backends inkl. tilføyde conv_none.py, ingen harde .cuda()-kall,
+  rembg-guard, mesh-stub-hook). Treet er IKKE lenger vendored i
+  git — `scripts/fetch_upstream.sh` henter oppstrøms @75fbf01 og
+  applikerer `scripts/upstream_mac_compat.patch` (verifisert:
+  hentet+patchet er byte-identisk med fasiten suiten er grønn mot).
+  Bruk den som fasit, ikke trellis-mac-kopien.
 - Runner-retning: Mojo-vert (jf. ADR 0001-hybrid og PyVelocityModel-
   presedensen; Python→Mojo-binding er upraktisk i 1.0.0b2).
 
