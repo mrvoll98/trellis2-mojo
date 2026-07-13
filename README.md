@@ -35,18 +35,29 @@ Highlights (M4 Pro, macOS arm64):
 
 Project journal: `docs/08_HANDOVER.md` (state + next steps),
 `docs/07_PORT_TRACKER.md` (file-by-file), `docs/06_MASTER_PLAN.md`
-(work packages), `MOJO_STATUS.md` (English summary). The `trellis2/`
-tree is the untouched original — the parity reference. The upstream
+(work packages), `MOJO_STATUS.md` (English summary). The upstream
 README is preserved as `docs/README_upstream_trellis2.md`.
 
 ## Setup
 
-Everything is pinned in `pixi.toml` (Mojo 1.0.0b2, torch 2.12):
+Everything is pinned in `pixi.toml` (Mojo 1.0.0b2, torch 2.12).
+The upstream reference code is not vendored — the parity tests
+compare against the untouched original, fetched into `trellis2/`,
+`o-voxel/` and `configs/` by:
+
+```
+scripts/fetch_upstream.sh   # clones microsoft/TRELLIS.2 @ the pinned commit
+```
+
+Then:
 
 ```
 pixi run test-all      # full parity suite (18 test files, no HF cache needed)
 pixi run bench         # Mojo vs torch benchmarks (docs/benchmarks/RESULTS.md)
 ```
+
+(The runner itself — `pixi run e2e` — is pure Mojo and does not need
+the upstream code.)
 
 Real-checkpoint tests (need the local HF cache with
 microsoft/TRELLIS.2-4B, microsoft/TRELLIS-image-large and
@@ -103,9 +114,9 @@ bit-reproducible end to end.
 ## License and attribution
 
 - Upstream [TRELLIS.2](https://github.com/microsoft/TRELLIS.2)
-  (Microsoft, MIT — see `LICENSE`): the `trellis2/` reference tree,
-  assets, configs and the original tooling; the Mojo port mirrors its
-  inference semantics.
+  (Microsoft, MIT — see `LICENSE`): the Mojo port mirrors its
+  inference semantics; the reference code is fetched by
+  `scripts/fetch_upstream.sh` for the parity tests, not vendored.
 - [CuMesh](https://github.com/JeffreyXiang/CuMesh) (MIT): the mesh
   post-processing and remeshing algorithms were re-implemented in Mojo
   from its published sources (read as reference only — no CUDA code is
