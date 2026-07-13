@@ -155,7 +155,8 @@ def main() raises:
     var sys_mod = Python.import_module("sys")
     var os_mod = Python.import_module("os")
     sys_mod.path.insert(0, os_mod.getcwd())
-    var io = Python.import_module("trellis2_mojo.ckpt_io")
+    sys_mod.path.insert(0, String(os_mod.getcwd()) + "/tests/parity")
+    var io = Python.import_module("ckpt_io")
     var torch = Python.import_module("torch")
 
     check_json_units()

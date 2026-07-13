@@ -27,7 +27,7 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 from PIL import Image  # noqa: E402
 
-from trellis2_mojo import cond_io  # noqa: E402  (sets HF offline env guards)
+import cond_io  # noqa: E402  (sets HF offline env guards)
 from trellis2.modules.image_feature_extractor import DinoV3FeatureExtractor  # noqa: E402
 from trellis2.pipelines.trellis2_image_to_3d import Trellis2ImageTo3DPipeline  # noqa: E402
 

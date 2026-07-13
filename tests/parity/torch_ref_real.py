@@ -31,7 +31,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 import torch  # noqa: E402
 
 from tests.parity.torch_ref_wp5 import gen_coords, correct_sdpa  # noqa: E402,F401  (patches sparse attn)
-from trellis2_mojo import ckpt_io  # noqa: E402
+import ckpt_io  # noqa: E402
 
 from trellis2.modules.sparse.basic import SparseTensor  # noqa: E402
 from trellis2.models.sparse_structure_flow import SparseStructureFlowModel  # noqa: E402

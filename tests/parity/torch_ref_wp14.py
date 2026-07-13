@@ -26,7 +26,7 @@ import numpy as np
 import torch
 from PIL import Image
 
-from trellis2_mojo import cond_io
+import cond_io
 
 PAM_DIR = "/tmp"
 
