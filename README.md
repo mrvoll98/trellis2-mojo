@@ -119,6 +119,20 @@ distances), never exact V/F counts. Same seed + same settings is
 bit-reproducible end to end with the native RNG. Seeds are not stream-compatible
 with releases that used an external framework's generator.
 
+## Example output
+
+A complete 12-step 512 run is checked in at
+[`examples/shoe_512_native_rng_qem200k_band2.glb`](examples/shoe_512_native_rng_qem200k_band2.glb),
+with its console output in
+[`examples/shoe_512_native_rng_qem200k_band2.log`](examples/shoe_512_native_rng_qem200k_band2.log).
+It was generated on an M4 Pro with Metal/f16, seed 42, remesh resolution 512,
+remesh band 2.0, projection 0.9 and a 200,000-face QEM target. The final GLB
+contains 96,042 vertices and 192,302 triangles and completed in 226 seconds.
+Band 2.0 was selected after a visual and topological A/B against band 1.0: it
+removed the small isolated shells and visible pinholes while preserving the
+shoe opening and lace detail. Raw OBJ and texture-voxel NPZ outputs remain
+excluded because they are large reproducible intermediates.
+
 ## License and acknowledgements
 
 The Mojo port is released under the MIT license (`LICENSE`). Every

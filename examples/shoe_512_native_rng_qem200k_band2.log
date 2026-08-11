@@ -1,0 +1,25 @@
+✨ Pixi task (e2e): mojo run -I . run_image_to_3d.mojo /tmp/trellis_shoe_3q_20260812.pam --seed 42 --steps 12 --out outputs/shoe_512_native_rng_qem200k_band2 --pipeline 512 --remesh --remesh-res 512 --remesh-band 2.0 --remesh-project 0.9 --simplify-faces 200000
+[gpu] offload enabled (api: metal, f16 weight-gemm)
+trellis2-mojo image->3D  (pipeline 512 , seed 42, steps 12 )
+image: /tmp/trellis_shoe_3q_20260812.pam
+[1/6] conditioning: [1 1029 1024] in 2s
+  [ss] dit load: 1s
+  [ss] decoder load: 0s
+  [ss] sample+decode: 108s
+[2/6] sparse structure: 1899 active voxels @ 32 ^3 in 110s
+  [slat] dit load: 1s
+  [slat] sample: 38s
+[3/6] shape slat: 1899 tokens in 40s
+[4/6] tex slat: 1899 tokens in 23s
+[5/6] shape decode: 561745 voxels @ 512 ^3 in 9s
+[6/6] mesh: 561745 vertices, 1156612 triangles in 0s
+saved: outputs/shoe_512_native_rng_qem200k_band2.obj
+tex decode: 561745 voxels in 10s
+saved: outputs/shoe_512_native_rng_qem200k_band2_texvoxels.npz
+remesh: dual-contoured to 1023080 V / 2046900 F ( res 512 , band 2.0 , project 0.9 )
+simplify: 1023080 V / 2046900 F -> 96042 V / 192302 F ( target 200000 )
+glb: 96042 vertices with sampled pbr attrs in 29s
+saved: outputs/shoe_512_native_rng_qem200k_band2.glb
+bbox min: -0.5000172 -0.19626972 -0.21809815
+bbox max: 0.50014925 0.1956041 0.21703976
+total: 226s

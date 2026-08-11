@@ -3,7 +3,7 @@
 Skrevet 2026-07-07; implementasjonsjournalen under dekker porteringen,
 Metal-optimaliseringene og remesh-arbeidet i juli 2026.
 
-## Gjeldende tilstand — 2026-08-11
+## Gjeldende tilstand — 2026-08-12
 
 Pipeline-kjøringen er nå Mojo fra PAM-input til OBJ, NPZ og GLB. Den bruker
 native CLI-tolking, prosjektets egen deterministiske normalfordelings-RNG,
@@ -24,6 +24,17 @@ pixi run e2e -- bilde.pam [--seed N] [--steps N] [--out prefix] \
 QEM-decimering og tre Metal CPU-vs-GPU-kontroller. Se
 [PURE_MOJO_RUNTIME.md](PURE_MOJO_RUNTIME.md)
 for fjerningen og kompatibilitetsnotatet for frø.
+
+En full native 512-kjøring med Metal/f16, seed 42, 12 steg,
+`--remesh-res 512 --remesh-band 2.0 --remesh-project 0.9` og
+`--simplify-faces 200000` ble verifisert 2026-08-12. Råmeshen hadde
+561 745 vertekser / 1 156 612 flater; remesh ga 1 023 080 / 2 046 900;
+QEM-resultatet ble 96 042 / 192 302 på 226 sekunder. Resultatet hadde null
+åpne kanter, null degenererte flater, ett brukt geometrikomponent og 116
+ikke-manifold DC-kryss. Mot band 1.0 forsvant fire små isolerte skall og de
+synlige pinhullene under lissene, uten synlig tap av hovedåpning eller
+lissedetalj. Den ferdige GLB-en og kjøreloggen ligger i `examples/`; rå OBJ
+og tekstur-NPZ er fortsatt ignorerte, reproduserbare mellomprodukter.
 
 Før referanseharnessen ble tatt ut, bestod den gamle 18-oppgaverssuiten og
 de tre cache-tunge kontrollene på stabil Mojo 1.0.0. Åtte produksjons-
