@@ -10,8 +10,6 @@
 # norm_type to its ResBlock3d's — they are constructed with the default
 # ("layer"), so norm_type only affects out_layer. The loader mirrors that.
 
-from std.python import PythonObject
-
 from trellis2_mojo.sparse.tensor import Tensor, OP_ADD
 from trellis2_mojo.modules.nn import GroupNorm32, ChannelLayerNorm32, activation, ACT_SILU
 from trellis2_mojo.modules.conv import Conv3d
@@ -182,7 +180,7 @@ def sparse_structure_decoder_from(
     num_res_blocks_middle: Int,
     norm_group: Bool,
 ) raises -> SparseStructureDecoder:
-    """Build the decoder from a torch state_dict (loaders.mojo pattern);
+    """Build the decoder from a native StateDict (loaders.mojo pattern);
     out/latent channel counts are implied by the conv weights."""
     # res blocks always use "layer" norm upstream (norm_type is not forwarded)
     var middle = List[ResBlock3d]()

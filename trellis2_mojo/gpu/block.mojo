@@ -22,11 +22,11 @@
 # adds are the exact same elementwise expressions as the CPU path. eps is
 # baked comptime to the blocks' 1e-6 — the dispatch gate checks it.
 
-from std.algorithm import parallelize
+from max.algorithm import parallelize
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceBuffer
+from max.gpu.host import DeviceBuffer
 from std.math import sqrt
-from std.memory import memcpy
+from std.memory import unsafe_memcpy
 
 from trellis2_mojo.gpu.context import GpuContext
 from trellis2_mojo.gpu.linear import GpuLinear, gpu_mlp_enqueue
@@ -45,59 +45,69 @@ comptime LN_EPS = Float32(1e-6)  # the DiT block norms; dispatch gate checks
 
 
 def ln_mod_rows(
-    x: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    consts: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    rows: Int, c: Int, off: Int, mode: Int,
+    x: Pointer[Scalar[F32], ImmutAnyOrigin],
+    dst: Pointer[Scalar[F32], MutAnyOrigin],
+    consts: Pointer[Scalar[F32], ImmutAnyOrigin],
+    rows_dev: Int32, c_dev: Int32, off_dev: Int32, mode_dev: Int32,
 ):
     """Per-row layer norm (biased var, eps comptime 1e-6) fused with the
-    adaLN epilogue. mode 1: modulate — consts[off:off+C] = shift,
+    adaLN epilogue. mode 1: modulate — consts[unsafe_offset=off:off+C] = shift,
     [off+C:off+2C] = scale, dst = ln(x)*(1+scale)+shift. mode 2: affine —
     consts pair = weight, bias, dst = ln(x)*w + b. One thread per row."""
+    var rows = Int(rows_dev)
+    var c = Int(c_dev)
+    var off = Int(off_dev)
+    var mode = Int(mode_dev)
+
     var r = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
     if r >= rows:
         return
     var base = r * c
     var mean: Float32 = 0
     for i in range(c):
-        mean += x[base + i]
+        mean += x[unsafe_offset=base + i]
     mean /= Float32(c)
     var variance: Float32 = 0
     for i in range(c):
-        var dv = x[base + i] - mean
+        var dv = x[unsafe_offset=base + i] - mean
         variance += dv * dv
     variance /= Float32(c)
     var inv_std = 1.0 / sqrt(variance + LN_EPS)
     if mode == 1:
         for i in range(c):
-            var nv = (x[base + i] - mean) * inv_std
-            dst[base + i] = nv * (1.0 + consts[off + c + i]) + consts[off + i]
+            var nv = (x[unsafe_offset=base + i] - mean) * inv_std
+            dst[unsafe_offset=base + i] = nv * (1.0 + consts[unsafe_offset=off + c + i]) + consts[unsafe_offset=off + i]
     else:
         for i in range(c):
-            var nv = (x[base + i] - mean) * inv_std
-            dst[base + i] = nv * consts[off + i] + consts[off + c + i]
+            var nv = (x[unsafe_offset=base + i] - mean) * inv_std
+            dst[unsafe_offset=base + i] = nv * consts[unsafe_offset=off + i] + consts[unsafe_offset=off + c + i]
 
 
 def gate_add_bias_rows(
-    x: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    h: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    consts: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    rows: Int, c: Int, off: Int, use_gate: Int,
+    x: Pointer[Scalar[F32], MutAnyOrigin],
+    h: Pointer[Scalar[F32], ImmutAnyOrigin],
+    consts: Pointer[Scalar[F32], ImmutAnyOrigin],
+    rows_dev: Int32, c_dev: Int32, off_dev: Int32, use_gate_dev: Int32,
 ):
     """Residual join with the chain's un-added out-bias folded in:
     x += (h + bias) * gate (use_gate 1) or x += h + bias (use_gate 0).
-    consts[off:off+C] = bias, [off+C:off+2C] = gate. One thread per
+    consts[unsafe_offset=off:off+C] = bias, [off+C:off+2C] = gate. One thread per
     element; same elementwise expression as the CPU linear-bias + gate +
     residual sequence."""
+    var rows = Int(rows_dev)
+    var c = Int(c_dev)
+    var off = Int(off_dev)
+    var use_gate = Int(use_gate_dev)
+
     var i = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
     if i >= rows * c:
         return
     var ci = i % c
-    var hv = h[i] + consts[off + ci]
+    var hv = h[unsafe_offset=i] + consts[unsafe_offset=off + ci]
     if use_gate == 1:
-        x[i] = x[i] + hv * consts[off + c + ci]
+        x[unsafe_offset=i] = x[unsafe_offset=i] + hv * consts[unsafe_offset=off + c + ci]
     else:
-        x[i] = x[i] + hv
+        x[unsafe_offset=i] = x[unsafe_offset=i] + hv
 
 
 def gpu_block_phases(
@@ -132,7 +142,7 @@ def gpu_block_state_upload(g: GpuContext, x: Tensor[F32], rows: Int, c: Int) rai
             var lo = i * chunk
             var n = min(chunk, total - lo)
             if n > 0:
-                memcpy(dest=ap + lo, src=xp + lo, count=n)
+                unsafe_memcpy(dest=ap.unsafe_offset(lo), src=xp.unsafe_offset(lo), count=n)
 
         parallelize[copy_in](NCHUNK)
 
@@ -157,7 +167,7 @@ def gpu_block_state_readback(
             var lo = i * chunk
             var n = min(chunk, total - lo)
             if n > 0:
-                memcpy(dest=op + lo, src=hp + lo, count=n)
+                unsafe_memcpy(dest=op.unsafe_offset(lo), src=hp.unsafe_offset(lo), count=n)
 
         parallelize[copy_out](NCHUNK)
     return out^
@@ -252,31 +262,31 @@ def gpu_cross_block_enqueue(
     #   5: mlp2 bias, gate3      (mlp residual join)
     with s[].bk.value().map_to_host() as hb:
         var bp = hb.unsafe_ptr()
-        memcpy(dest=bp, src=m[0].data.unsafe_ptr(), count=c)
-        memcpy(dest=bp + c, src=m[1].data.unsafe_ptr(), count=c)
+        unsafe_memcpy(dest=bp, src=m[0].data.unsafe_ptr(), count=c)
+        unsafe_memcpy(dest=bp.unsafe_offset(c), src=m[1].data.unsafe_ptr(), count=c)
         if self_out.has_bias:
-            memcpy(dest=bp + 2 * c, src=self_out.bias_host.unsafe_ptr(), count=c)
+            unsafe_memcpy(dest=bp.unsafe_offset(2 * c), src=self_out.bias_host.unsafe_ptr(), count=c)
         else:
             for i in range(c):
-                bp[2 * c + i] = 0
-        memcpy(dest=bp + 3 * c, src=m[2].data.unsafe_ptr(), count=c)
-        memcpy(dest=bp + 4 * c, src=norm2_w.data.unsafe_ptr(), count=c)
-        memcpy(dest=bp + 5 * c, src=norm2_b.data.unsafe_ptr(), count=c)
+                bp[unsafe_offset=2 * c + i] = 0
+        unsafe_memcpy(dest=bp.unsafe_offset(3 * c), src=m[2].data.unsafe_ptr(), count=c)
+        unsafe_memcpy(dest=bp.unsafe_offset(4 * c), src=norm2_w.data.unsafe_ptr(), count=c)
+        unsafe_memcpy(dest=bp.unsafe_offset(5 * c), src=norm2_b.data.unsafe_ptr(), count=c)
         if cross_out.has_bias:
-            memcpy(dest=bp + 6 * c, src=cross_out.bias_host.unsafe_ptr(), count=c)
+            unsafe_memcpy(dest=bp.unsafe_offset(6 * c), src=cross_out.bias_host.unsafe_ptr(), count=c)
         else:
             for i in range(c):
-                bp[6 * c + i] = 0
+                bp[unsafe_offset=6 * c + i] = 0
         for i in range(c):
-            bp[7 * c + i] = 0
-        memcpy(dest=bp + 8 * c, src=m[3].data.unsafe_ptr(), count=c)
-        memcpy(dest=bp + 9 * c, src=m[4].data.unsafe_ptr(), count=c)
+            bp[unsafe_offset=7 * c + i] = 0
+        unsafe_memcpy(dest=bp.unsafe_offset(8 * c), src=m[3].data.unsafe_ptr(), count=c)
+        unsafe_memcpy(dest=bp.unsafe_offset(9 * c), src=m[4].data.unsafe_ptr(), count=c)
         if mlp2.has_bias:
-            memcpy(dest=bp + 10 * c, src=mlp2.bias_host.unsafe_ptr(), count=c)
+            unsafe_memcpy(dest=bp.unsafe_offset(10 * c), src=mlp2.bias_host.unsafe_ptr(), count=c)
         else:
             for i in range(c):
-                bp[10 * c + i] = 0
-        memcpy(dest=bp + 11 * c, src=m[5].data.unsafe_ptr(), count=c)
+                bp[unsafe_offset=10 * c + i] = 0
+        unsafe_memcpy(dest=bp.unsafe_offset(11 * c), src=m[5].data.unsafe_ptr(), count=c)
 
     _cross_pack_kv(g, k, v, h, d, lp)
 
@@ -284,49 +294,104 @@ def gpu_cross_block_enqueue(
     var xs = s[].xs.value()
     var hs = s[].hs.value()
     var bk = s[].bk.value()
+    # Nightly: concrete DeviceBuffer origins need rebind into kernel origins.
+    var xs_mut = rebind[Pointer[Scalar[F32], MutAnyOrigin]](xs.unsafe_ptr())
+    var hs_mut = rebind[Pointer[Scalar[F32], MutAnyOrigin]](hs.unsafe_ptr())
+    var hs_imm = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](hs.unsafe_ptr())
+    var xs_imm = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](xs.unsafe_ptr())
+    var bk_imm = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](bk.unsafe_ptr())
+
     # norm1 + modulate: xs -> hs
     g.ctx.enqueue_function[ln_mod_rows](
-        xs.unsafe_ptr(), hs.unsafe_ptr(), bk.unsafe_ptr(),
-        rows, c, 0, 1,
-        grid_dim=((rows + 255) // 256,), block_dim=(256,),
+        xs_imm,
+        hs_mut,
+        bk_imm,
+        Int32(rows),
+        Int32(c),
+        Int32(0),
+        Int32(1),
+        grid_dim=((rows + 255) // 256,),
+        block_dim=(256,),
     )
     # self-attention chain: hs -> hs
     _attn_chain_enqueue(
         self_chain, g, hs, rows, self_qkv, self_out, use_rope, ph_buf, hs
     )
+    # rebind again after possible aliasing (hs may have been written by chain)
+    hs_mut = rebind[Pointer[Scalar[F32], MutAnyOrigin]](hs.unsafe_ptr())
+    hs_imm = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](hs.unsafe_ptr())
+    xs_mut = rebind[Pointer[Scalar[F32], MutAnyOrigin]](xs.unsafe_ptr())
     # xs += (hs + self_out_bias) * gate1
     g.ctx.enqueue_function[gate_add_bias_rows](
-        xs.unsafe_ptr(), hs.unsafe_ptr(), bk.unsafe_ptr(),
-        rows, c, 2 * c, 1,
-        grid_dim=((rows * c + 255) // 256,), block_dim=(256,),
+        xs_mut,
+        hs_imm,
+        bk_imm,
+        Int32(rows),
+        Int32(c),
+        Int32(2 * c),
+        Int32(1),
+        grid_dim=((rows * c + 255) // 256,),
+        block_dim=(256,),
     )
     # affine norm2: xs -> hs
+    xs_imm = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](xs.unsafe_ptr())
+    hs_mut = rebind[Pointer[Scalar[F32], MutAnyOrigin]](hs.unsafe_ptr())
     g.ctx.enqueue_function[ln_mod_rows](
-        xs.unsafe_ptr(), hs.unsafe_ptr(), bk.unsafe_ptr(),
-        rows, c, 4 * c, 2,
-        grid_dim=((rows + 255) // 256,), block_dim=(256,),
+        xs_imm,
+        hs_mut,
+        bk_imm,
+        Int32(rows),
+        Int32(c),
+        Int32(4 * c),
+        Int32(2),
+        grid_dim=((rows + 255) // 256,),
+        block_dim=(256,),
     )
     # cross-attention chain: hs -> hs (pre-packed ckt/cvh)
     _cross_chain_enqueue(
         cross_chain, g, hs, rows, lkv, cross_q, cross_out, hs
     )
+    hs_imm = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](hs.unsafe_ptr())
+    xs_mut = rebind[Pointer[Scalar[F32], MutAnyOrigin]](xs.unsafe_ptr())
     # xs += hs + cross_out_bias (ungated)
     g.ctx.enqueue_function[gate_add_bias_rows](
-        xs.unsafe_ptr(), hs.unsafe_ptr(), bk.unsafe_ptr(),
-        rows, c, 6 * c, 0,
-        grid_dim=((rows * c + 255) // 256,), block_dim=(256,),
+        xs_mut,
+        hs_imm,
+        bk_imm,
+        Int32(rows),
+        Int32(c),
+        Int32(6 * c),
+        Int32(0),
+        grid_dim=((rows * c + 255) // 256,),
+        block_dim=(256,),
     )
     # norm3 + modulate: xs -> hs
+    xs_imm = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](xs.unsafe_ptr())
+    hs_mut = rebind[Pointer[Scalar[F32], MutAnyOrigin]](hs.unsafe_ptr())
     g.ctx.enqueue_function[ln_mod_rows](
-        xs.unsafe_ptr(), hs.unsafe_ptr(), bk.unsafe_ptr(),
-        rows, c, 8 * c, 1,
-        grid_dim=((rows + 255) // 256,), block_dim=(256,),
+        xs_imm,
+        hs_mut,
+        bk_imm,
+        Int32(rows),
+        Int32(c),
+        Int32(8 * c),
+        Int32(1),
+        grid_dim=((rows + 255) // 256,),
+        block_dim=(256,),
     )
     # mlp chain: hs -> hs
     gpu_mlp_enqueue(g, hs, rows, mlp0, mlp2, hs)
+    hs_imm = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](hs.unsafe_ptr())
+    xs_mut = rebind[Pointer[Scalar[F32], MutAnyOrigin]](xs.unsafe_ptr())
     # xs += (hs + mlp2_bias) * gate3
     g.ctx.enqueue_function[gate_add_bias_rows](
-        xs.unsafe_ptr(), hs.unsafe_ptr(), bk.unsafe_ptr(),
-        rows, c, 10 * c, 1,
-        grid_dim=((rows * c + 255) // 256,), block_dim=(256,),
+        xs_mut,
+        hs_imm,
+        bk_imm,
+        Int32(rows),
+        Int32(c),
+        Int32(10 * c),
+        Int32(1),
+        grid_dim=((rows * c + 255) // 256,),
+        block_dim=(256,),
     )

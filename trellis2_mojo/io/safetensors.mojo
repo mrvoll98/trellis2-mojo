@@ -4,10 +4,10 @@
 # BF16 -> f32 is a u16 << 16 bit shift, F16 goes through the hardware
 # DType.float16 cast, F32 copies straight through. SIMD width 8 with
 # alignment=1 loads (the data section is not guaranteed aligned), same
-# copy pattern as interop.mojo — bit-identical to ckpt_io.py's
-# torch-based cast (verified by pixi run test-io).
+# copy pattern used by the previous loader. All eight production checkpoints
+# were verified bit-identical during the native-loader migration.
 
-from std.memory import UnsafePointer, Span
+from std.memory import Pointer, Span
 
 from trellis2_mojo.io.json import JsonDoc, parse_json
 from trellis2_mojo.sparse.tensor import Tensor, stable_argsort
@@ -16,38 +16,38 @@ comptime F32 = DType.float32
 comptime W = 8
 
 
-def _convert_bf16(src: UnsafePointer[UInt8, MutAnyOrigin], dst: UnsafePointer[Scalar[F32], MutAnyOrigin], n: Int):
-    var sp = src.bitcast[Scalar[DType.uint16]]()
+def _convert_bf16(src: Pointer[UInt8, ImmutAnyOrigin], dst: Pointer[Scalar[F32], MutAnyOrigin], n: Int):
+    var sp = src.unsafe_bitcast[Scalar[DType.uint16]]()
     var i = 0
     while i + W <= n:
-        var bits = sp.load[width=W, alignment=1](i).cast[DType.uint32]() << 16
-        dst.store(i, SIMD[F32, W](from_bits=bits))
+        var bits = sp.unsafe_load[width=W, alignment=1](i).cast[DType.uint32]() << 16
+        dst.unsafe_store(i, SIMD[F32, W](from_bits=bits))
         i += W
     while i < n:
-        var b1 = sp.load[width=1, alignment=1](i).cast[DType.uint32]() << 16
-        dst.store(i, SIMD[F32, 1](from_bits=b1))
+        var b1 = sp.unsafe_load[width=1, alignment=1](i).cast[DType.uint32]() << 16
+        dst.unsafe_store(i, SIMD[F32, 1](from_bits=b1))
         i += 1
 
 
-def _convert_f16(src: UnsafePointer[UInt8, MutAnyOrigin], dst: UnsafePointer[Scalar[F32], MutAnyOrigin], n: Int):
-    var sp = src.bitcast[Scalar[DType.float16]]()
+def _convert_f16(src: Pointer[UInt8, ImmutAnyOrigin], dst: Pointer[Scalar[F32], MutAnyOrigin], n: Int):
+    var sp = src.unsafe_bitcast[Scalar[DType.float16]]()
     var i = 0
     while i + W <= n:
-        dst.store(i, sp.load[width=W, alignment=1](i).cast[F32]())
+        dst.unsafe_store(i, sp.unsafe_load[width=W, alignment=1](i).cast[F32]())
         i += W
     while i < n:
-        dst.store(i, sp.load[width=1, alignment=1](i).cast[F32]())
+        dst.unsafe_store(i, sp.unsafe_load[width=1, alignment=1](i).cast[F32]())
         i += 1
 
 
-def _convert_f32(src: UnsafePointer[UInt8, MutAnyOrigin], dst: UnsafePointer[Scalar[F32], MutAnyOrigin], n: Int):
-    var sp = src.bitcast[Scalar[F32]]()
+def _convert_f32(src: Pointer[UInt8, ImmutAnyOrigin], dst: Pointer[Scalar[F32], MutAnyOrigin], n: Int):
+    var sp = src.unsafe_bitcast[Scalar[F32]]()
     var i = 0
     while i + W <= n:
-        dst.store(i, sp.load[width=W, alignment=1](i))
+        dst.unsafe_store(i, sp.unsafe_load[width=W, alignment=1](i))
         i += W
     while i < n:
-        dst.store(i, sp.load[width=1, alignment=1](i))
+        dst.unsafe_store(i, sp.unsafe_load[width=1, alignment=1](i))
         i += 1
 
 
@@ -113,8 +113,11 @@ def load_safetensors_f32(path: String) raises -> Dict[String, Tensor[F32]]:
         if len(raw) != end - start:
             raise Error("safetensors: truncated data for " + name)
         cur = end
-        var src = raw.unsafe_ptr()
-        var dst = t.data.unsafe_ptr()
+        # Stable Mojo keeps the concrete List origins on unsafe_ptr().
+        # Rebind them to the explicit read-only/write-only contracts used by
+        # the conversion helpers; both backing Lists stay alive below.
+        var src = rebind[Pointer[UInt8, ImmutAnyOrigin]](raw.unsafe_ptr())
+        var dst = rebind[Pointer[Scalar[F32], MutAnyOrigin]](t.data.unsafe_ptr())
         if dt == "BF16":
             _convert_bf16(src, dst, n)
         elif dt == "F16":

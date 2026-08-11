@@ -2,7 +2,8 @@
 
 **Project:** trellis-mojo (port of trellis.2 / TRELLIS.2 to Mojo)
 
-**Phase 1 Status:** Copy complete. Many .md files for mapping created.
+**Status:** Pure-Mojo inference, Metal GPU-sti og fase-2-remesh er ferdige;
+repoet kjører på stabil Mojo 1.0.0 uten Python-/tensor-framework-runtime.
 
 See README_MOJO.md for overview.
 
@@ -14,7 +15,9 @@ See README_MOJO.md for overview.
 - [05_VERIFICATION_PLAN.md](05_VERIFICATION_PLAN.md)
 - **[06_MASTER_PLAN.md](06_MASTER_PLAN.md) — operativ planlegger: arbeidspakker WP0–WP10 med avhengigheter og akseptkriterier**
 - **[07_PORT_TRACKER.md](07_PORT_TRACKER.md) — fil-for-fil fremdriftsstatus (sannhetskilden)**
-- **[08_HANDOVER.md](08_HANDOVER.md) — handover: tilstand per WP7, Mojo-syntaksnotater, hvordan fortsette med WP8**
+- **[08_HANDOVER.md](08_HANDOVER.md) — komplett prosjektjournal, gjeldende tilstand og neste steg**
+- **[MOJO_NIGHTLY_MIGRATION.md](MOJO_NIGHTLY_MIGRATION.md) — migrering fra Mojo 1.0-beta via nightly til stabil 1.0.0**
+- **[PURE_MOJO_RUNTIME.md](PURE_MOJO_RUNTIME.md) — gjeldende avhengigheter, RNG/NPZ og hva som ble fjernet**
 
 ## Architecture
 - [architecture/00_overview.md](architecture/00_overview.md)
@@ -105,4 +108,6 @@ See README_MOJO.md for overview.
 - [../README_MOJO.md](../README_MOJO.md)
 - [../MOJO_STATUS.md](../MOJO_STATUS.md)
 
-**Status:** Phase 1 in progress - many MD files for kartlegging created to start the process.
+**Status:** Inferensport, Metal-sti, eksport og remesh er implementert. Eldre
+kartleggingsdokumenter er et historisk arbeidsarkiv; bruk README og
+PURE_MOJO_RUNTIME for gjeldende kommandoer.

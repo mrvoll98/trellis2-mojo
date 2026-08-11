@@ -1,6 +1,5 @@
-# WP3 unit tests: VarLenTensor/SparseTensor semantics vs hand-computed
-# expectations from the PyTorch original (trellis2/modules/sparse/basic.py).
-# Torch-based fuzz parity runs separately once torch interop lands (WP1 gate).
+# WP3 unit tests: VarLenTensor/SparseTensor semantics against hand-computed
+# expectations.
 #
 # Run: pixi run mojo run -I . tests/parity/test_sparse_basic.mojo
 

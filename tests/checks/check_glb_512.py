@@ -3,12 +3,9 @@
 # trunc-toward-zero neighbors) sampled at the GLB's vertices mapped back
 # to world coords; material factors must match the sampled means; and
 # trimesh must load the file cleanly.
-import sys
-
 import numpy as np
 
-sys.path.insert(0, "tests/parity")  # kjør fra repo-rot
-from torch_ref_wp15 import read_glb  # noqa: E402
+from glb_reader import read_glb
 
 GLB = "outputs/shoe_512_final.glb"
 NPZ = "outputs/shoe_512_final_texvoxels.npz"
@@ -39,7 +36,7 @@ offs = np.array([
 acc = np.zeros((q.shape[0], attrs.shape[1]), dtype=np.float32)
 wsum = np.zeros((q.shape[0],), dtype=np.float32)
 for k in range(8):
-    n = (q + offs[k]).astype(np.int32)  # trunc toward zero, like torch .int()
+    n = (q + offs[k]).astype(np.int32)  # trunc toward zero
     inb = (n >= 0).all(axis=1) & (n < GRID).all(axis=1)
     valid = np.zeros(q.shape[0], dtype=bool)
     valid[inb] = occ[n[inb, 0], n[inb, 1], n[inb, 2]]

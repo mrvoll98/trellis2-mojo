@@ -28,10 +28,10 @@
 #
 # Determinisme: bitset-enumerasjon gir sorterte voxel-/verteksnøkler,
 # quad-byggingen går i voxel-så-akse-rekkefølge, kompaktering i
-# stigende indeks (speiler torch.unique), og alle parallelle pass
+# stigende indeks, og alle parallelle pass
 # skriver disjunkte slots.
 
-from std.algorithm import parallelize
+from max.algorithm import parallelize
 from std.math import sqrt
 
 from trellis2_mojo.sparse.tensor import Tensor, IntMatrix
@@ -100,10 +100,10 @@ def _grid_closest(
     px: Float64, py: Float64, pz: Float64,
     c0: Float64, c1: Float64, c2: Float64,
     scale: Float64, G: Int,
-    starts: UnsafePointer[Scalar[I32], _],
-    entries: UnsafePointer[Scalar[I32], _],
-    vp: UnsafePointer[Scalar[F32], _],
-    fp: UnsafePointer[Scalar[I32], _],
+    starts: Pointer[Scalar[I32], _],
+    entries: Pointer[Scalar[I32], _],
+    vp: Pointer[Scalar[F32], _],
+    fp: Pointer[Scalar[I32], _],
     r_max: Float64,
 ) -> Tuple[Float64, Float64, Float64, Float64]:
     """Closest point on the binned mesh within r_max (world units).
@@ -145,18 +145,18 @@ def _grid_closest(
                 if z < 0 or z >= G:
                     continue
                 var cell = (x * G + y) * G + z
-                var t0 = Int(starts[cell])
-                var t1 = Int(starts[cell + 1])
+                var t0 = Int(starts[unsafe_offset=cell])
+                var t1 = Int(starts[unsafe_offset=cell + 1])
                 for e in range(t0, t1):
-                    var t = Int(entries[e])
-                    var ia = Int(fp[t * 3 + 0])
-                    var ib = Int(fp[t * 3 + 1])
-                    var ic = Int(fp[t * 3 + 2])
+                    var t = Int(entries[unsafe_offset=e])
+                    var ia = Int(fp[unsafe_offset=t * 3 + 0])
+                    var ib = Int(fp[unsafe_offset=t * 3 + 1])
+                    var ic = Int(fp[unsafe_offset=t * 3 + 2])
                     var q = _closest_pt_tri(
                         px, py, pz,
-                        Float64(vp[ia * 3 + 0]), Float64(vp[ia * 3 + 1]), Float64(vp[ia * 3 + 2]),
-                        Float64(vp[ib * 3 + 0]), Float64(vp[ib * 3 + 1]), Float64(vp[ib * 3 + 2]),
-                        Float64(vp[ic * 3 + 0]), Float64(vp[ic * 3 + 1]), Float64(vp[ic * 3 + 2]),
+                        Float64(vp[unsafe_offset=ia * 3 + 0]), Float64(vp[unsafe_offset=ia * 3 + 1]), Float64(vp[unsafe_offset=ia * 3 + 2]),
+                        Float64(vp[unsafe_offset=ib * 3 + 0]), Float64(vp[unsafe_offset=ib * 3 + 1]), Float64(vp[unsafe_offset=ib * 3 + 2]),
+                        Float64(vp[unsafe_offset=ic * 3 + 0]), Float64(vp[unsafe_offset=ic * 3 + 1]), Float64(vp[unsafe_offset=ic * 3 + 2]),
                     )
                     var ddx = q[0] - px
                     var ddy = q[1] - py
@@ -172,13 +172,13 @@ def _grid_closest(
     return (sqrt(best), qx, qy, qz)
 
 
-def _bsearch(keys: UnsafePointer[Int, _], n: Int, key: Int) -> Int:
+def _bsearch(keys: Pointer[Int, _], n: Int, key: Int) -> Int:
     """Index of key in sorted keys, or -1."""
     var lo = 0
     var hi = n
     while lo < hi:
         var mid = (lo + hi) // 2
-        var k = keys[mid]
+        var k = keys[unsafe_offset=mid]
         if k == key:
             return mid
         if k < key:
@@ -233,7 +233,7 @@ def remesh_narrow_band_dc(
             var lo = 1.0e30
             var hi = -1.0e30
             for k in range(3):
-                var w = Float64(vp[Int(fp[t * 3 + k]) * 3 + c])
+                var w = Float64(vp[unsafe_offset=Int(fp[unsafe_offset=t * 3 + k]) * 3 + c])
                 if w < lo:
                     lo = w
                 if w > hi:
@@ -288,7 +288,7 @@ def remesh_narrow_band_dc(
             var lo = 1.0e30
             var hi = -1.0e30
             for k in range(3):
-                var w = Float64(vp[Int(fp[t * 3 + k]) * 3 + c])
+                var w = Float64(vp[unsafe_offset=Int(fp[unsafe_offset=t * 3 + k]) * 3 + c])
                 if w < lo:
                     lo = w
                 if w > hi:
@@ -329,7 +329,7 @@ def remesh_narrow_band_dc(
 
     @parameter
     def cand_body(i: Int):
-        var key = cp[i]
+        var key = cp[unsafe_offset=i]
         var vx = key // (R * R)
         var vy = (key // R) % R
         var vz = key % R
@@ -341,7 +341,7 @@ def remesh_narrow_band_dc(
         if d < 0:
             d = -d
         if d < 0.87 * cell:
-            kp[i] = 1
+            kp[unsafe_offset=i] = 1
 
     parallelize[cand_body](n_cand)
     var vox_keys = List[Int]()
@@ -383,7 +383,7 @@ def remesh_narrow_band_dc(
 
     @parameter
     def vert_body(i: Int):
-        var key = gvp[i]
+        var key = gvp[unsafe_offset=i]
         var vx = key // (R1 * R1)
         var vy = (key // R1) % R1
         var vz = key % R1
@@ -391,7 +391,7 @@ def remesh_narrow_band_dc(
         var wy = (Float64(vy) / Float64(R) - 0.5) * scale + c1
         var wz = (Float64(vz) / Float64(R) - 0.5) * scale + c2
         var q = _grid_closest(wx, wy, wz, c0, c1, c2, scale, G, sp, ep, vp, fp, r_max)
-        vvp[i] = Float32(q[0] - eps)
+        vvp[unsafe_offset=i] = Float32(q[0] - eps)
 
     parallelize[vert_body](n_gvert)
 
@@ -404,7 +404,7 @@ def remesh_narrow_band_dc(
 
     @parameter
     def dc_body(i: Int):
-        var key = vkp[i]
+        var key = vkp[unsafe_offset=i]
         var vx = key // (R * R)
         var vy = (key // R) % R
         var vz = key % R
@@ -417,8 +417,8 @@ def remesh_narrow_band_dc(
             for v in range(2):
                 var k1 = ((vx) * R1 + vy + u) * R1 + vz + v
                 var k2 = ((vx + 1) * R1 + vy + u) * R1 + vz + v
-                var v1 = Float64(vvp[_bsearch(gvp, n_gvert, k1)])
-                var v2 = Float64(vvp[_bsearch(gvp, n_gvert, k2)])
+                var v1 = Float64(vvp[unsafe_offset=_bsearch(gvp, n_gvert, k1)])
+                var v2 = Float64(vvp[unsafe_offset=_bsearch(gvp, n_gvert, k2)])
                 if (v1 < 0 and v2 >= 0) or (v1 >= 0 and v2 < 0):
                     var t = -v1 / (v2 - v1)
                     sx += Float64(vx) + t
@@ -427,18 +427,18 @@ def remesh_narrow_band_dc(
                     cnt += 1
                 if u == 1 and v == 1:
                     if v1 < 0 and v2 >= 0:
-                        flp[i * 3 + 0] = 1
+                        flp[unsafe_offset=i * 3 + 0] = 1
                     elif v1 >= 0 and v2 < 0:
-                        flp[i * 3 + 0] = -1
+                        flp[unsafe_offset=i * 3 + 0] = -1
                     else:
-                        flp[i * 3 + 0] = 0
+                        flp[unsafe_offset=i * 3 + 0] = 0
         # axis Y edges
         for u in range(2):
             for v in range(2):
                 var k1 = ((vx + u) * R1 + vy) * R1 + vz + v
                 var k2 = ((vx + u) * R1 + vy + 1) * R1 + vz + v
-                var v1 = Float64(vvp[_bsearch(gvp, n_gvert, k1)])
-                var v2 = Float64(vvp[_bsearch(gvp, n_gvert, k2)])
+                var v1 = Float64(vvp[unsafe_offset=_bsearch(gvp, n_gvert, k1)])
+                var v2 = Float64(vvp[unsafe_offset=_bsearch(gvp, n_gvert, k2)])
                 if (v1 < 0 and v2 >= 0) or (v1 >= 0 and v2 < 0):
                     var t = -v1 / (v2 - v1)
                     sx += Float64(vx + u)
@@ -447,18 +447,18 @@ def remesh_narrow_band_dc(
                     cnt += 1
                 if u == 1 and v == 1:
                     if v1 < 0 and v2 >= 0:
-                        flp[i * 3 + 1] = 1
+                        flp[unsafe_offset=i * 3 + 1] = 1
                     elif v1 >= 0 and v2 < 0:
-                        flp[i * 3 + 1] = -1
+                        flp[unsafe_offset=i * 3 + 1] = -1
                     else:
-                        flp[i * 3 + 1] = 0
+                        flp[unsafe_offset=i * 3 + 1] = 0
         # axis Z edges
         for u in range(2):
             for v in range(2):
                 var k1 = ((vx + u) * R1 + vy + v) * R1 + vz
                 var k2 = ((vx + u) * R1 + vy + v) * R1 + vz + 1
-                var v1 = Float64(vvp[_bsearch(gvp, n_gvert, k1)])
-                var v2 = Float64(vvp[_bsearch(gvp, n_gvert, k2)])
+                var v1 = Float64(vvp[unsafe_offset=_bsearch(gvp, n_gvert, k1)])
+                var v2 = Float64(vvp[unsafe_offset=_bsearch(gvp, n_gvert, k2)])
                 if (v1 < 0 and v2 >= 0) or (v1 >= 0 and v2 < 0):
                     var t = -v1 / (v2 - v1)
                     sx += Float64(vx + u)
@@ -467,19 +467,19 @@ def remesh_narrow_band_dc(
                     cnt += 1
                 if u == 1 and v == 1:
                     if v1 < 0 and v2 >= 0:
-                        flp[i * 3 + 2] = 1
+                        flp[unsafe_offset=i * 3 + 2] = 1
                     elif v1 >= 0 and v2 < 0:
-                        flp[i * 3 + 2] = -1
+                        flp[unsafe_offset=i * 3 + 2] = -1
                     else:
-                        flp[i * 3 + 2] = 0
+                        flp[unsafe_offset=i * 3 + 2] = 0
         if cnt > 0:
-            dp[i * 3 + 0] = Float32(sx / Float64(cnt))
-            dp[i * 3 + 1] = Float32(sy / Float64(cnt))
-            dp[i * 3 + 2] = Float32(sz / Float64(cnt))
+            dp[unsafe_offset=i * 3 + 0] = Float32(sx / Float64(cnt))
+            dp[unsafe_offset=i * 3 + 1] = Float32(sy / Float64(cnt))
+            dp[unsafe_offset=i * 3 + 2] = Float32(sz / Float64(cnt))
         else:
-            dp[i * 3 + 0] = Float32(vx) + 0.5
-            dp[i * 3 + 1] = Float32(vy) + 0.5
-            dp[i * 3 + 2] = Float32(vz) + 0.5
+            dp[unsafe_offset=i * 3 + 0] = Float32(vx) + 0.5
+            dp[unsafe_offset=i * 3 + 1] = Float32(vy) + 0.5
+            dp[unsafe_offset=i * 3 + 2] = Float32(vz) + 0.5
 
     parallelize[dc_body](n_vox)
 
@@ -575,7 +575,7 @@ def remesh_narrow_band_dc(
     if n_quads == 0:
         return (out_v^, out_f^)
 
-    # --- compact used dual verts (ascending, like torch.unique) ---
+    # --- compact used dual verts in ascending order ---
     var used = List[Bool](length=n_vox, fill=False)
     for i in range(n_quads * 4):
         used[quad[i]] = True
@@ -661,14 +661,14 @@ def remesh_narrow_band_dc(
 
         @parameter
         def proj_body(i: Int):
-            var wx = Float64(wp2[i * 3 + 0])
-            var wy = Float64(wp2[i * 3 + 1])
-            var wz = Float64(wp2[i * 3 + 2])
+            var wx = Float64(wp2[unsafe_offset=i * 3 + 0])
+            var wy = Float64(wp2[unsafe_offset=i * 3 + 1])
+            var wz = Float64(wp2[unsafe_offset=i * 3 + 2])
             var q = _grid_closest(wx, wy, wz, c0, c1, c2, scale, G, sp, ep, vp, fp, r_max)
             if q[0] < r_max:
-                wp2[i * 3 + 0] = Float32(wx - project_back * (wx - q[1]))
-                wp2[i * 3 + 1] = Float32(wy - project_back * (wy - q[2]))
-                wp2[i * 3 + 2] = Float32(wz - project_back * (wz - q[3]))
+                wp2[unsafe_offset=i * 3 + 0] = Float32(wx - project_back * (wx - q[1]))
+                wp2[unsafe_offset=i * 3 + 1] = Float32(wy - project_back * (wy - q[2]))
+                wp2[unsafe_offset=i * 3 + 2] = Float32(wz - project_back * (wz - q[3]))
 
         parallelize[proj_body](n_out)
 

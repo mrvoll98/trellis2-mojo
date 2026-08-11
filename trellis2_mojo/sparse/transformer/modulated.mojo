@@ -8,7 +8,7 @@
 # device-resident when all three chains qualify (same orchestrator as the
 # dense block — identical structure on flat feats [T, C]).
 
-from std.gpu.host import DeviceBuffer
+from max.gpu.host import DeviceBuffer
 
 from trellis2_mojo.gpu.block import gpu_cross_block_forward, gpu_cross_block_enqueue
 from trellis2_mojo.gpu.linear import gpu_mlp_wants

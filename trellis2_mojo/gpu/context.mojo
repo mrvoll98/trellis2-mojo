@@ -12,7 +12,7 @@
 # constructor raises and gpu_context_from_env falls back to CPU.
 
 from std.gpu import thread_idx, block_idx, block_dim
-from std.gpu.host import DeviceContext, DeviceBuffer
+from max.gpu.host import DeviceContext, DeviceBuffer
 from std.memory import ArcPointer
 from std.os import getenv
 
@@ -20,20 +20,21 @@ comptime F32 = DType.float32
 
 
 def _selftest_scale(
-    a: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    c: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    n: Int,
+    a: Pointer[Scalar[F32], MutAnyOrigin],
+    c: Pointer[Scalar[F32], MutAnyOrigin],
+    n_dev: Int32,
 ):
+    var n = Int(n_dev)
     var i = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
     if i < n:
-        c[i] = a[i] * 2.0 + 1.0
+        c[unsafe_offset=i] = a[unsafe_offset=i] * 2.0 + 1.0
 
 
 struct GpuScratch(Movable):
     """Grow-only device buffers for the linear/conv paths, shared through
     the GpuContext ArcPointer (the fence barrier in each forward makes
     cross-call reuse safe). `e` holds the sparse-conv edge/CSR pack
-    (int32: header + row_start + src + kidx). `xs`/`hs`/`bk` are the
+    (int32: header + row_start + (src + kidx)). `xs`/`hs`/`bk` are the
     whole-block residency state (WP11 step 10): running x, norm/attn
     scratch and the per-block glue consts (shift/scale/gate/bias pairs)."""
 
@@ -142,7 +143,10 @@ struct GpuContext(Copyable, Movable):
                 for i in range(1024):
                     h[i] = Float32(i % 51) + Float32(cycle)
             self.ctx.enqueue_function[_selftest_scale](
-                sin.unsafe_ptr(), sout.unsafe_ptr(), 1024,
+                sin.unsafe_ptr(),
+ sout.unsafe_ptr(),
+ Int32(1024),
+
                 grid_dim=(4,), block_dim=(256,),
             )
             self.barrier()

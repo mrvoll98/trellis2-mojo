@@ -51,11 +51,12 @@
 # read back; the GEMM is row-independent); requires co % 64 == 0 and
 # ci % 16 == 0 — anything else stays on the CPU path.
 
-from std.algorithm import parallelize
-from std.gpu import thread_idx, block_idx, barrier
-from std.gpu.host import DeviceContext, DeviceBuffer
-from std.gpu.memory import AddressSpace
-from std.memory import stack_allocation, memcpy
+from max.algorithm import parallelize
+from std.gpu import thread_idx, block_idx
+from max.gpu import barrier
+from max.gpu.host import DeviceContext, DeviceBuffer
+from std.memory import  AddressSpace
+from std.memory import stack_allocation, unsafe_memcpy
 
 # re-exported so existing `from trellis2_mojo.gpu.linear import GpuContext,
 # gpu_context_from_env` call sites keep compiling (context/scratches moved
@@ -105,14 +106,18 @@ comptime GPU_MIN_WEIGHT = 1 << 19
 
 
 def gemm_tiled(
-    a: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    c: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    m: Int, n: Int, kdim: Int,
+    a: Pointer[Scalar[F32], ImmutAnyOrigin],
+    b: Pointer[Scalar[F32], ImmutAnyOrigin],
+    c: Pointer[Scalar[F32], MutAnyOrigin],
+    m_dev: Int32, n_dev: Int32, kdim_dev: Int32,
 ):
     """C[m, n] = A[m, kdim] @ B[kdim, n]; 64x64 threadgroup tiles in shared
     memory, 4x4 register block per thread, cooperative 4-wide loads.
     Requires m % 64 == n % 64 == kdim % 16 == 0."""
+    var m = Int(m_dev)
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
+
     var As = stack_allocation[
         BM * BK, Scalar[F32], address_space = AddressSpace.SHARED
     ]()
@@ -134,24 +139,24 @@ def gemm_tiled(
         var ar = ia // BK
         var ac = ia % BK
         var a_src = (Int(block_idx.y) * BM + ar) * kdim + kb * BK + ac
-        As.store(ia, a.load[width=4](a_src))
+        As.unsafe_store(ia, a.unsafe_load[width=4](a_src))
         var ib = tid * 4
         var br = ib // BN
         var bc = ib % BN
         var b_src = (kb * BK + br) * n + Int(block_idx.x) * BN + bc
-        Bs.store(ib, b.load[width=4](b_src))
+        Bs.unsafe_store(ib, b.unsafe_load[width=4](b_src))
         barrier()
         for kk in range(BK):
-            var bv = Bs.load[width=TN](kk * BN + tx * TN)
-            acc0 += SIMD[F32, TN](As[(ty * TM + 0) * BK + kk]) * bv
-            acc1 += SIMD[F32, TN](As[(ty * TM + 1) * BK + kk]) * bv
-            acc2 += SIMD[F32, TN](As[(ty * TM + 2) * BK + kk]) * bv
-            acc3 += SIMD[F32, TN](As[(ty * TM + 3) * BK + kk]) * bv
+            var bv = Bs.unsafe_load[width=TN](kk * BN + tx * TN)
+            acc0 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 0) * BK + kk]) * bv
+            acc1 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 1) * BK + kk]) * bv
+            acc2 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 2) * BK + kk]) * bv
+            acc3 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 3) * BK + kk]) * bv
         barrier()
-    c.store((row0 + 0) * n + col0, acc0)
-    c.store((row0 + 1) * n + col0, acc1)
-    c.store((row0 + 2) * n + col0, acc2)
-    c.store((row0 + 3) * n + col0, acc3)
+    c.unsafe_store((row0 + 0) * n + col0, acc0)
+    c.unsafe_store((row0 + 1) * n + col0, acc1)
+    c.unsafe_store((row0 + 2) * n + col0, acc2)
+    c.unsafe_store((row0 + 3) * n + col0, acc3)
 
 
 def wfmt_scan(w: Tensor[F32]) raises -> Tuple[Bool, Bool]:
@@ -176,7 +181,7 @@ def wfmt_scan(w: Tensor[F32]) raises -> Tuple[Bool, Bool]:
         var acch = SIMD[U32, W](0)
         var i = lo
         while i + W <= hi:
-            var v = wp.load[width=W](i)
+            var v = wp.unsafe_load[width=W](i)
             var bits = v.to_bits[U32]()
             accb |= bits & 0xFFFF
             acch |= bits ^ v.cast[DType.float16]().cast[F32]().to_bits[U32]()
@@ -187,9 +192,9 @@ def wfmt_scan(w: Tensor[F32]) raises -> Tuple[Bool, Bool]:
             sb |= accb[l]
             sh |= acch[l]
         while i < hi:
-            var b1 = wp[i].to_bits[U32]()
+            var b1 = wp[unsafe_offset=i].to_bits[U32]()
             sb |= b1 & 0xFFFF
-            sh |= b1 ^ wp[i].cast[DType.float16]().cast[F32]().to_bits[U32]()
+            sh |= b1 ^ wp[unsafe_offset=i].cast[DType.float16]().cast[F32]().to_bits[U32]()
             i += 1
         if sb != 0:
             bf_bad[sc] = 1
@@ -208,15 +213,19 @@ def wfmt_scan(w: Tensor[F32]) raises -> Tuple[Bool, Bool]:
 
 
 def gemm_tiled_bf16(
-    a: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[U16], MutAnyOrigin],
-    c: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    m: Int, n: Int, kdim: Int,
+    a: Pointer[Scalar[F32], ImmutAnyOrigin],
+    b: Pointer[Scalar[U16], ImmutAnyOrigin],
+    c: Pointer[Scalar[F32], MutAnyOrigin],
+    m_dev: Int32, n_dev: Int32, kdim_dev: Int32,
 ):
     """gemm_tiled with B stored as bf16 bits, expanded u16 << 16 -> f32 on
     the shared-memory fill. The expansion is bit-exact for bf16-loaded
     weights, so the accumulation is bit-identical to the f32 kernel on the
     same values (benchmarks/microbench_gpu_gemm.mojo measured it FLAT)."""
+    var m = Int(m_dev)
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
+
     var As = stack_allocation[
         BM * BK, Scalar[F32], address_space = AddressSpace.SHARED
     ]()
@@ -238,36 +247,40 @@ def gemm_tiled_bf16(
         var ar = ia // BK
         var ac = ia % BK
         var a_src = (Int(block_idx.y) * BM + ar) * kdim + kb * BK + ac
-        As.store(ia, a.load[width=4](a_src))
+        As.unsafe_store(ia, a.unsafe_load[width=4](a_src))
         var ib = tid * 4
         var br = ib // BN
         var bc = ib % BN
         var b_src = (kb * BK + br) * n + Int(block_idx.x) * BN + bc
-        var raw = b.load[width=4](b_src).cast[U32]() << 16
-        Bs.store(ib, SIMD[F32, 4](from_bits=raw))
+        var raw = b.unsafe_load[width=4](b_src).cast[U32]() << 16
+        Bs.unsafe_store(ib, SIMD[F32, 4](from_bits=raw))
         barrier()
         for kk in range(BK):
-            var bv = Bs.load[width=TN](kk * BN + tx * TN)
-            acc0 += SIMD[F32, TN](As[(ty * TM + 0) * BK + kk]) * bv
-            acc1 += SIMD[F32, TN](As[(ty * TM + 1) * BK + kk]) * bv
-            acc2 += SIMD[F32, TN](As[(ty * TM + 2) * BK + kk]) * bv
-            acc3 += SIMD[F32, TN](As[(ty * TM + 3) * BK + kk]) * bv
+            var bv = Bs.unsafe_load[width=TN](kk * BN + tx * TN)
+            acc0 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 0) * BK + kk]) * bv
+            acc1 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 1) * BK + kk]) * bv
+            acc2 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 2) * BK + kk]) * bv
+            acc3 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 3) * BK + kk]) * bv
         barrier()
-    c.store((row0 + 0) * n + col0, acc0)
-    c.store((row0 + 1) * n + col0, acc1)
-    c.store((row0 + 2) * n + col0, acc2)
-    c.store((row0 + 3) * n + col0, acc3)
+    c.unsafe_store((row0 + 0) * n + col0, acc0)
+    c.unsafe_store((row0 + 1) * n + col0, acc1)
+    c.unsafe_store((row0 + 2) * n + col0, acc2)
+    c.unsafe_store((row0 + 3) * n + col0, acc3)
 
 
 def gemm_tiled_f16(
-    a: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[U16], MutAnyOrigin],
-    c: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    m: Int, n: Int, kdim: Int,
+    a: Pointer[Scalar[F32], ImmutAnyOrigin],
+    b: Pointer[Scalar[U16], ImmutAnyOrigin],
+    c: Pointer[Scalar[F32], MutAnyOrigin],
+    m_dev: Int32, n_dev: Int32, kdim_dev: Int32,
 ):
     """gemm_tiled with B stored as f16 bits (hardware cast -> f32 on the
     shared-memory fill) — for weights that round-trip f32 -> f16 exactly,
     i.e. the fp16 checkpoints. Bit-identical to f32 storage."""
+    var m = Int(m_dev)
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
+
     var As = stack_allocation[
         BM * BK, Scalar[F32], address_space = AddressSpace.SHARED
     ]()
@@ -289,37 +302,41 @@ def gemm_tiled_f16(
         var ar = ia // BK
         var ac = ia % BK
         var a_src = (Int(block_idx.y) * BM + ar) * kdim + kb * BK + ac
-        As.store(ia, a.load[width=4](a_src))
+        As.unsafe_store(ia, a.unsafe_load[width=4](a_src))
         var ib = tid * 4
         var br = ib // BN
         var bc = ib % BN
         var b_src = (kb * BK + br) * n + Int(block_idx.x) * BN + bc
-        var raw = b.load[width=4](b_src)
-        Bs.store(ib, SIMD[DType.float16, 4](from_bits=raw).cast[F32]())
+        var raw = b.unsafe_load[width=4](b_src)
+        Bs.unsafe_store(ib, SIMD[DType.float16, 4](from_bits=raw).cast[F32]())
         barrier()
         for kk in range(BK):
-            var bv = Bs.load[width=TN](kk * BN + tx * TN)
-            acc0 += SIMD[F32, TN](As[(ty * TM + 0) * BK + kk]) * bv
-            acc1 += SIMD[F32, TN](As[(ty * TM + 1) * BK + kk]) * bv
-            acc2 += SIMD[F32, TN](As[(ty * TM + 2) * BK + kk]) * bv
-            acc3 += SIMD[F32, TN](As[(ty * TM + 3) * BK + kk]) * bv
+            var bv = Bs.unsafe_load[width=TN](kk * BN + tx * TN)
+            acc0 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 0) * BK + kk]) * bv
+            acc1 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 1) * BK + kk]) * bv
+            acc2 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 2) * BK + kk]) * bv
+            acc3 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 3) * BK + kk]) * bv
         barrier()
-    c.store((row0 + 0) * n + col0, acc0)
-    c.store((row0 + 1) * n + col0, acc1)
-    c.store((row0 + 2) * n + col0, acc2)
-    c.store((row0 + 3) * n + col0, acc3)
+    c.unsafe_store((row0 + 0) * n + col0, acc0)
+    c.unsafe_store((row0 + 1) * n + col0, acc1)
+    c.unsafe_store((row0 + 2) * n + col0, acc2)
+    c.unsafe_store((row0 + 3) * n + col0, acc3)
 
 
 def gemm_tiled_f16sh(
-    a: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[U16], MutAnyOrigin],
-    c: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    m: Int, n: Int, kdim: Int,
+    a: Pointer[Scalar[F32], ImmutAnyOrigin],
+    b: Pointer[Scalar[U16], ImmutAnyOrigin],
+    c: Pointer[Scalar[F32], MutAnyOrigin],
+    m_dev: Int32, n_dev: Int32, kdim_dev: Int32,
 ):
     """WP19: B lagret som f16-bits, BEGGE shared-flisene i f16 (A castes
     på fyllet, tilbake til f32 i registerlasten — mattematikken og
     akkumulatorene er f32). +32-40 % målt: kjernen var shared-
     båndbredde-bundet, og halverte fliser dobler effektiv båndbredde."""
+    var m = Int(m_dev)
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
+
     var As = stack_allocation[
         BM * BK, Scalar[DType.float16], address_space = AddressSpace.SHARED
     ]()
@@ -341,33 +358,33 @@ def gemm_tiled_f16sh(
         var ar = ia // BK
         var ac = ia % BK
         var a_src = (Int(block_idx.y) * BM + ar) * kdim + kb * BK + ac
-        As.store(ia, a.load[width=4](a_src).cast[DType.float16]())
+        As.unsafe_store(ia, a.unsafe_load[width=4](a_src).cast[DType.float16]())
         var ib = tid * 4
         var br = ib // BN
         var bc = ib % BN
         var b_src = (kb * BK + br) * n + Int(block_idx.x) * BN + bc
-        var raw = b.load[width=4](b_src)
-        Bs.store(ib, SIMD[DType.float16, 4](from_bits=raw))
+        var raw = b.unsafe_load[width=4](b_src)
+        Bs.unsafe_store(ib, SIMD[DType.float16, 4](from_bits=raw))
         barrier()
         for kk in range(BK):
-            var bv = Bs.load[width=TN](kk * BN + tx * TN).cast[F32]()
+            var bv = Bs.unsafe_load[width=TN](kk * BN + tx * TN).cast[F32]()
             acc0 += SIMD[F32, TN](
-                As[(ty * TM + 0) * BK + kk].cast[F32]()
+                As[unsafe_offset=(ty * TM + 0) * BK + kk].cast[F32]()
             ) * bv
             acc1 += SIMD[F32, TN](
-                As[(ty * TM + 1) * BK + kk].cast[F32]()
+                As[unsafe_offset=(ty * TM + 1) * BK + kk].cast[F32]()
             ) * bv
             acc2 += SIMD[F32, TN](
-                As[(ty * TM + 2) * BK + kk].cast[F32]()
+                As[unsafe_offset=(ty * TM + 2) * BK + kk].cast[F32]()
             ) * bv
             acc3 += SIMD[F32, TN](
-                As[(ty * TM + 3) * BK + kk].cast[F32]()
+                As[unsafe_offset=(ty * TM + 3) * BK + kk].cast[F32]()
             ) * bv
         barrier()
-    c.store((row0 + 0) * n + col0, acc0)
-    c.store((row0 + 1) * n + col0, acc1)
-    c.store((row0 + 2) * n + col0, acc2)
-    c.store((row0 + 3) * n + col0, acc3)
+    c.unsafe_store((row0 + 0) * n + col0, acc0)
+    c.unsafe_store((row0 + 1) * n + col0, acc1)
+    c.unsafe_store((row0 + 2) * n + col0, acc2)
+    c.unsafe_store((row0 + 3) * n + col0, acc3)
 
 
 struct GpuLinear(Copyable, Movable):
@@ -463,7 +480,7 @@ struct GpuLinear(Copyable, Movable):
                     var k1 = min((kc + 1) * KCH, ci)
                     for k in range(kc * KCH, k1):
                         for j in range(co):
-                            hp[k * co + j] = wp[j * ci + k]
+                            hp[unsafe_offset=k * co + j] = wp[unsafe_offset=j * ci + k]
 
                 parallelize[pack](nch)
         else:
@@ -477,25 +494,25 @@ struct GpuLinear(Copyable, Movable):
                     var k1 = min((kc + 1) * KCH, ci)
                     for k in range(kc * KCH, k1):
                         for j in range(co):
-                            var v = wp[j * ci + k]
+                            var v = wp[unsafe_offset=j * ci + k]
                             if is_bf:
-                                hp[k * co + j] = (v.to_bits[U32]() >> 16).cast[U16]()
+                                hp[unsafe_offset=k * co + j] = (v.to_bits[U32]() >> 16).cast[U16]()
                             else:
-                                hp[k * co + j] = v.cast[DType.float16]().to_bits[U16]()
+                                hp[unsafe_offset=k * co + j] = v.cast[DType.float16]().to_bits[U16]()
 
                 parallelize[pack16](nch)
         var bias_host = List[Float32]()
         if has_bias:
             bias_host = List[Float32](length=co, fill=0)
-            memcpy(dest=bias_host.unsafe_ptr(), src=bias.data.unsafe_ptr(), count=co)
+            unsafe_memcpy(dest=bias_host.unsafe_ptr(), src=bias.data.unsafe_ptr(), count=co)
         var bias_dev = g.ctx.enqueue_create_buffer[F32](co)
         with bias_dev.map_to_host() as h:
             var bp = h.unsafe_ptr()
             if has_bias:
-                memcpy(dest=bp, src=bias.data.unsafe_ptr(), count=co)
+                unsafe_memcpy(dest=bp, src=bias.data.unsafe_ptr(), count=co)
             else:
                 for j in range(co):
-                    bp[j] = 0
+                    bp[unsafe_offset=j] = 0
         return GpuLinear(
             g^, wfmt, bt^, bt16^, bias_host^, bias_dev^, has_bias, co, ci
         )
@@ -505,34 +522,61 @@ struct GpuLinear(Copyable, Movable):
 
     def enqueue_gemm(
         self,
-        a: UnsafePointer[Scalar[F32], MutAnyOrigin],
-        c: UnsafePointer[Scalar[F32], MutAnyOrigin],
+        a: Pointer[Scalar[F32], _],
+        c: Pointer[Scalar[F32], _],
         m_pad: Int,
     ) raises:
-        """Enqueue the weight GEMM c[m_pad, co] = a[m_pad, ci] @ W^T on the
-        storage format's kernel — every weight-GEMM call site (forward, mlp
-        chain, attention chains, whole-block queue) goes through here. The
-        16-bit expansion happens on the shared-memory fill and is bit-exact,
-        so all three paths compute identical results on the same weights."""
+        """Enqueue weight GEMM c[unsafe_offset=m_pad, co] = a[unsafe_offset=m_pad, ci] @ W^T."""
+        # Nightly: DeviceBuffer pointers carry concrete origins; rebind for kernels.
+        var a_k = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](a)
+        var c_k = rebind[Pointer[Scalar[F32], MutAnyOrigin]](c)
         if self.wfmt == WFMT_F16SH:
+            var b_k_f16sh = rebind[Pointer[Scalar[U16], ImmutAnyOrigin]](self.bt16.value().unsafe_ptr())
             self.g.ctx.enqueue_function[gemm_tiled_f16sh](
-                a, self.bt16.value().unsafe_ptr(), c, m_pad, self.co, self.ci,
-                grid_dim=(self.co // BN, m_pad // BM), block_dim=(16, 16),
+                a_k,
+                b_k_f16sh,
+                c_k,
+                Int32(m_pad),
+                Int32(self.co),
+                Int32(self.ci),
+                grid_dim=(self.co // BN, m_pad // BM),
+                block_dim=(16, 16),
             )
         elif self.wfmt == WFMT_BF16:
+            var b_k_bf16 = rebind[Pointer[Scalar[U16], ImmutAnyOrigin]](self.bt16.value().unsafe_ptr())
             self.g.ctx.enqueue_function[gemm_tiled_bf16](
-                a, self.bt16.value().unsafe_ptr(), c, m_pad, self.co, self.ci,
-                grid_dim=(self.co // BN, m_pad // BM), block_dim=(16, 16),
+                a_k,
+                b_k_bf16,
+                c_k,
+                Int32(m_pad),
+                Int32(self.co),
+                Int32(self.ci),
+                grid_dim=(self.co // BN, m_pad // BM),
+                block_dim=(16, 16),
             )
         elif self.wfmt == WFMT_F16:
+            var b_k_f16 = rebind[Pointer[Scalar[U16], ImmutAnyOrigin]](self.bt16.value().unsafe_ptr())
             self.g.ctx.enqueue_function[gemm_tiled_f16](
-                a, self.bt16.value().unsafe_ptr(), c, m_pad, self.co, self.ci,
-                grid_dim=(self.co // BN, m_pad // BM), block_dim=(16, 16),
+                a_k,
+                b_k_f16,
+                c_k,
+                Int32(m_pad),
+                Int32(self.co),
+                Int32(self.ci),
+                grid_dim=(self.co // BN, m_pad // BM),
+                block_dim=(16, 16),
             )
         else:
+            var b_k = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](self.bt.value().unsafe_ptr())
             self.g.ctx.enqueue_function[gemm_tiled](
-                a, self.bt.value().unsafe_ptr(), c, m_pad, self.co, self.ci,
-                grid_dim=(self.co // BN, m_pad // BM), block_dim=(16, 16),
+                a_k,
+                b_k,
+                c_k,
+                Int32(m_pad),
+                Int32(self.co),
+                Int32(self.ci),
+                grid_dim=(self.co // BN, m_pad // BM),
+                block_dim=(16, 16),
             )
 
     def forward(self, x: Tensor[F32]) raises -> Tensor[F32]:
@@ -569,7 +613,7 @@ struct GpuLinear(Copyable, Movable):
                 var lo = i * chunk
                 var n = min(chunk, total - lo)
                 if n > 0:
-                    memcpy(dest=ap + lo, src=xp + lo, count=n)
+                    unsafe_memcpy(dest=ap.unsafe_offset(lo), src=xp.unsafe_offset(lo), count=n)
 
             parallelize[copy_in](NCHUNK)
 
@@ -603,38 +647,41 @@ struct GpuLinear(Copyable, Movable):
                         var base = r * co
                         var j = 0
                         while j < co_main:
-                            op.store(base + j, hp.load[width=W](base + j) + bp.load[width=W](j))
+                            op.unsafe_store(base + j, hp.unsafe_load[width=W](base + j) + bp.unsafe_load[width=W](j))
                             j += W
                         while j < co:
-                            op[base + j] = hp[base + j] + bp[j]
+                            op[unsafe_offset=base + j] = hp[unsafe_offset=base + j] + bp[unsafe_offset=j]
                             j += 1
                 else:
-                    memcpy(dest=op + r0 * co, src=hp + r0 * co, count=(r1 - r0) * co)
+                    unsafe_memcpy(dest=op.unsafe_offset(r0 * co), src=hp.unsafe_offset(r0 * co), count=(r1 - r0) * co)
 
             parallelize[copy_out](NCHUNK)
         return out^
 
 
 def gelu_tanh_bias(
-    c: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    bias: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    co: Int, total: Int,
+    c: Pointer[Scalar[F32], MutAnyOrigin],
+    bias: Pointer[Scalar[F32], ImmutAnyOrigin],
+    co_dev: Int32, total_dev: Int32,
 ):
-    """In place on c [rows, co]: gelu-tanh(c + bias[col]). tanh is computed
+    """In place on c [rows, co]: gelu-tanh(c + bias[unsafe_offset=col]). tanh is computed
     through exp — the GPU library tanh is a fast approximation (~2e-3)
     while exp is precise (softmax parity 2.3e-7)."""
+    var co = Int(co_dev)
+    var total = Int(total_dev)
+
     from std.gpu import thread_idx, block_idx, block_dim
     from std.math import exp
     var i = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
     if i < total:
-        var v = c[i] + bias[i % co]
+        var v = c[unsafe_offset=i] + bias[unsafe_offset=i % co]
         var inner = Float32(0.7978845608028654) * (v + Float32(0.044715) * v * v * v)
         var ax = abs(inner)
         var t = exp(-2.0 * ax)
         var th = (1.0 - t) / (1.0 + t)
         if inner < 0:
             th = -th
-        c[i] = 0.5 * v * (1.0 + th)
+        c[unsafe_offset=i] = 0.5 * v * (1.0 + th)
 
 
 def gpu_mlp_wants(lin0: GpuLinear, lin2: GpuLinear, rows: Int) -> Bool:
@@ -685,7 +732,7 @@ def gpu_mlp_forward(
             var lo = i * chunk
             var n = min(chunk, total - lo)
             if n > 0:
-                memcpy(dest=ap + lo, src=xp + lo, count=n)
+                unsafe_memcpy(dest=ap.unsafe_offset(lo), src=xp.unsafe_offset(lo), count=n)
 
         parallelize[copy_in](NCHUNK)
 
@@ -714,13 +761,13 @@ def gpu_mlp_forward(
                     var base = r * co2
                     var j = 0
                     while j < co_main:
-                        op.store(base + j, hp.load[width=W](base + j) + b2p.load[width=W](j))
+                        op.unsafe_store(base + j, hp.unsafe_load[width=W](base + j) + b2p.unsafe_load[width=W](j))
                         j += W
                     while j < co2:
-                        op[base + j] = hp[base + j] + b2p[j]
+                        op[unsafe_offset=base + j] = hp[unsafe_offset=base + j] + b2p[unsafe_offset=j]
                         j += 1
             else:
-                memcpy(dest=op + r0 * co2, src=hp + r0 * co2, count=(r1 - r0) * co2)
+                unsafe_memcpy(dest=op.unsafe_offset(r0 * co2), src=hp.unsafe_offset(r0 * co2), count=(r1 - r0) * co2)
 
         parallelize[copy_out](NCHUNK)
     return out^
@@ -749,8 +796,12 @@ def gpu_mlp_enqueue(
     )
     var total_c = m_pad * lin0.co
     g.ctx.enqueue_function[gelu_tanh_bias](
-        s[].c.value().unsafe_ptr(), lin0.bias_dev.unsafe_ptr(),
-        lin0.co, total_c,
+        s[].c.value().unsafe_ptr(),
+ lin0.bias_dev.unsafe_ptr(),
+
+        Int32(lin0.co),
+ Int32(total_c),
+
         grid_dim=((total_c + 255) // 256,), block_dim=(256,),
     )
     lin2.enqueue_gemm(

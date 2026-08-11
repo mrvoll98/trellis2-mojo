@@ -70,12 +70,12 @@ def write_glb(
     var idx_len = nidx * 4
     var bin_len = pos_len + nrm_len + col_len + idx_len
     var bin = List[UInt8](length=bin_len, fill=0)
-    var fp = bin.unsafe_ptr().bitcast[Scalar[F32]]()
+    var fp = bin.unsafe_ptr().unsafe_bitcast[Scalar[F32]]()
     for i in range(v * 3):
-        fp.store(i, vertices.data[i])
+        fp.unsafe_store(i, vertices.data[i])
     var noff = v * 3
     for i in range(v * 3):
-        fp.store(noff + i, normals.data[i])
+        fp.unsafe_store(noff + i, normals.data[i])
     var coff = v * 6
     for i in range(v * 4):
         var x = colors.data[i]
@@ -83,14 +83,14 @@ def write_glb(
             x = 0
         if x > 1:
             x = 1
-        fp.store(coff + i, x)
-    var ip = (bin.unsafe_ptr() + pos_len + nrm_len + col_len).bitcast[
+        fp.unsafe_store(coff + i, x)
+    var ip = (bin.unsafe_ptr().unsafe_offset(pos_len + nrm_len + col_len)).unsafe_bitcast[
         Scalar[U32]
     ]()
     for f in range(faces.rows):
-        ip.store(f * 3 + 0, UInt32(faces.at(f, 0)))
-        ip.store(f * 3 + 1, UInt32(faces.at(f, 1)))
-        ip.store(f * 3 + 2, UInt32(faces.at(f, 2)))
+        ip.unsafe_store(f * 3 + 0, UInt32(faces.at(f, 0)))
+        ip.unsafe_store(f * 3 + 1, UInt32(faces.at(f, 1)))
+        ip.unsafe_store(f * 3 + 2, UInt32(faces.at(f, 2)))
 
     # POSITION accessors require min/max
     var mn = List[Float32](length=3, fill=0)

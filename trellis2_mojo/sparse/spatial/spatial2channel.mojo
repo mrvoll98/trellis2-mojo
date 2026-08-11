@@ -85,8 +85,6 @@ struct SparseChannel2Spatial(Copyable, Movable):
 
     def forward(self, x: SparseTensor[F32]) raises -> SparseTensor[F32]:
         """Cache path: requires a preceding SparseSpatial2Channel."""
-        var dim = x.coords.cols - 1
-        var f3 = self.factor ** dim
         var cached = x.get_spatial_cache("channel2spatial_" + String(self.factor))
         if not cached:
             raise Error("SparseChannel2Spatial: cache not found; provide subdivision or pair with SparseSpatial2Channel")

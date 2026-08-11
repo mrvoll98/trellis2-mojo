@@ -13,9 +13,10 @@
 # window: enqueue -> flush-map wait. See gpu/linear.mojo header for the
 # full set of empirical Metal laws.
 
-from std.gpu import thread_idx, block_idx, barrier
-from std.gpu.host import DeviceContext
-from std.gpu.memory import AddressSpace
+from std.gpu import thread_idx, block_idx
+from max.gpu import barrier
+from max.gpu.host import DeviceContext
+from std.memory import AddressSpace
 from std.memory import stack_allocation
 from std.time import perf_counter_ns
 
@@ -27,11 +28,14 @@ comptime TN = 4
 
 
 def gemm_tiled(
-    a: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    c: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    m: Int, n: Int, kdim: Int,
+    a: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    b: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    c: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    m_dev: Int32, n_dev: Int32, kdim_dev: Int32,
 ):
+    var m = Int(m_dev)
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
     var As = stack_allocation[
         BM * BK, Scalar[DType.float32], address_space = AddressSpace.SHARED
     ]()
@@ -54,32 +58,35 @@ def gemm_tiled(
         var ar = ia // BK
         var ac = ia % BK
         var a_src = (Int(block_idx.y) * BM + ar) * kdim + kb * BK + ac
-        As.store(ia, a.load[width=4](a_src))
+        As.unsafe_store(ia, a.unsafe_load[width=4](a_src))
         var ib = tid * 4
         var br = ib // BN
         var bc = ib % BN
         var b_src = (kb * BK + br) * n + Int(block_idx.x) * BN + bc
-        Bs.store(ib, b.load[width=4](b_src))
+        Bs.unsafe_store(ib, b.unsafe_load[width=4](b_src))
         barrier()
         for kk in range(BK):
-            var bv = Bs.load[width=TN](kk * BN + tx * TN)
+            var bv = Bs.unsafe_load[width=TN](kk * BN + tx * TN)
             acc0 += SIMD[DType.float32, TN](As[(ty * TM + 0) * BK + kk]) * bv
             acc1 += SIMD[DType.float32, TN](As[(ty * TM + 1) * BK + kk]) * bv
             acc2 += SIMD[DType.float32, TN](As[(ty * TM + 2) * BK + kk]) * bv
             acc3 += SIMD[DType.float32, TN](As[(ty * TM + 3) * BK + kk]) * bv
         barrier()
-    c.store((row0 + 0) * n + col0, acc0)
-    c.store((row0 + 1) * n + col0, acc1)
-    c.store((row0 + 2) * n + col0, acc2)
-    c.store((row0 + 3) * n + col0, acc3)
+    c.unsafe_store((row0 + 0) * n + col0, acc0)
+    c.unsafe_store((row0 + 1) * n + col0, acc1)
+    c.unsafe_store((row0 + 2) * n + col0, acc2)
+    c.unsafe_store((row0 + 3) * n + col0, acc3)
 
 
 def gemm_tiled_a(
-    a: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    c: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    m: Int, n: Int, kdim: Int,
+    a: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    b: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    c: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    m_dev: Int32, n_dev: Int32, kdim_dev: Int32,
 ):
+    var m = Int(m_dev)
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
     """Variant A: 64x128 tile, 4x8 register block (2 Bs vec4 loads + 4 As
     scalars per kk feed 8 vec4 FMAs). Requires M%64, N%128, K%16."""
     var As = stack_allocation[
@@ -106,17 +113,17 @@ def gemm_tiled_a(
         var ia = tid * 4
         var ar = ia // BK
         var ac = ia % BK
-        As.store(ia, a.load[width=4]((Int(block_idx.y) * 64 + ar) * kdim + kb * BK + ac))
+        As.unsafe_store(ia, a.unsafe_load[width=4]((Int(block_idx.y) * 64 + ar) * kdim + kb * BK + ac))
         var ib = tid * 8
         var br = ib // 128
         var bc = ib % 128
         var b_src = (kb * BK + br) * n + Int(block_idx.x) * 128 + bc
-        Bs.store(ib, b.load[width=4](b_src))
-        Bs.store(ib + 4, b.load[width=4](b_src + 4))
+        Bs.unsafe_store(ib, b.unsafe_load[width=4](b_src))
+        Bs.unsafe_store(ib + 4, b.unsafe_load[width=4](b_src + 4))
         barrier()
         for kk in range(BK):
-            var bv0 = Bs.load[width=4](kk * 128 + tx * 8)
-            var bv1 = Bs.load[width=4](kk * 128 + tx * 8 + 4)
+            var bv0 = Bs.unsafe_load[width=4](kk * 128 + tx * 8)
+            var bv1 = Bs.unsafe_load[width=4](kk * 128 + tx * 8 + 4)
             var x0 = SIMD[DType.float32, 4](As[(ty * 4 + 0) * BK + kk])
             var x1 = SIMD[DType.float32, 4](As[(ty * 4 + 1) * BK + kk])
             var x2 = SIMD[DType.float32, 4](As[(ty * 4 + 2) * BK + kk])
@@ -130,22 +137,25 @@ def gemm_tiled_a(
             a30 += x3 * bv0
             a31 += x3 * bv1
         barrier()
-    c.store((row0 + 0) * n + col0, a00)
-    c.store((row0 + 0) * n + col0 + 4, a01)
-    c.store((row0 + 1) * n + col0, a10)
-    c.store((row0 + 1) * n + col0 + 4, a11)
-    c.store((row0 + 2) * n + col0, a20)
-    c.store((row0 + 2) * n + col0 + 4, a21)
-    c.store((row0 + 3) * n + col0, a30)
-    c.store((row0 + 3) * n + col0 + 4, a31)
+    c.unsafe_store((row0 + 0) * n + col0, a00)
+    c.unsafe_store((row0 + 0) * n + col0 + 4, a01)
+    c.unsafe_store((row0 + 1) * n + col0, a10)
+    c.unsafe_store((row0 + 1) * n + col0 + 4, a11)
+    c.unsafe_store((row0 + 2) * n + col0, a20)
+    c.unsafe_store((row0 + 2) * n + col0 + 4, a21)
+    c.unsafe_store((row0 + 3) * n + col0, a30)
+    c.unsafe_store((row0 + 3) * n + col0 + 4, a31)
 
 
 def gemm_tiled_b(
-    a: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    c: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    m: Int, n: Int, kdim: Int,
+    a: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    b: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    c: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    m_dev: Int32, n_dev: Int32, kdim_dev: Int32,
 ):
+    var m = Int(m_dev)
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
     """Variant B: 128x128 tile, 8x8 register block (2 Bs loads + 8 As
     scalars per kk feed 16 vec4 FMAs). Requires M%128, N%128, K%16."""
     var As = stack_allocation[
@@ -166,18 +176,18 @@ def gemm_tiled_b(
         var ar = ia // BK
         var ac = ia % BK
         var a_src = (Int(block_idx.y) * 128 + ar) * kdim + kb * BK + ac
-        As.store(ia, a.load[width=4](a_src))
-        As.store(ia + 4, a.load[width=4](a_src + 4))
+        As.unsafe_store(ia, a.unsafe_load[width=4](a_src))
+        As.unsafe_store(ia + 4, a.unsafe_load[width=4](a_src + 4))
         var ib = tid * 8
         var br = ib // 128
         var bc = ib % 128
         var b_src = (kb * BK + br) * n + Int(block_idx.x) * 128 + bc
-        Bs.store(ib, b.load[width=4](b_src))
-        Bs.store(ib + 4, b.load[width=4](b_src + 4))
+        Bs.unsafe_store(ib, b.unsafe_load[width=4](b_src))
+        Bs.unsafe_store(ib + 4, b.unsafe_load[width=4](b_src + 4))
         barrier()
         for kk in range(BK):
-            var bv0 = Bs.load[width=4](kk * 128 + tx * 8)
-            var bv1 = Bs.load[width=4](kk * 128 + tx * 8 + 4)
+            var bv0 = Bs.unsafe_load[width=4](kk * 128 + tx * 8)
+            var bv1 = Bs.unsafe_load[width=4](kk * 128 + tx * 8 + 4)
             @parameter
             for r in range(8):
                 var xv = SIMD[DType.float32, 4](As[(ty * 8 + r) * BK + kk])
@@ -186,8 +196,8 @@ def gemm_tiled_b(
         barrier()
     @parameter
     for r in range(8):
-        c.store((row0 + r) * n + col0, acc[2 * r])
-        c.store((row0 + r) * n + col0 + 4, acc[2 * r + 1])
+        c.unsafe_store((row0 + r) * n + col0, acc[2 * r])
+        c.unsafe_store((row0 + r) * n + col0 + 4, acc[2 * r + 1])
 
 
 def bench(ctx: DeviceContext, m: Int, n: Int, kdim: Int) raises:
@@ -204,7 +214,13 @@ def bench(ctx: DeviceContext, m: Int, n: Int, kdim: Int) raises:
     for it in range(4):
         var t0 = perf_counter_ns()
         ctx.enqueue_function[gemm_tiled](
-            ab.unsafe_ptr(), bb.unsafe_ptr(), cb.unsafe_ptr(), m, n, kdim,
+            ab.unsafe_ptr(),
+ bb.unsafe_ptr(),
+ cb.unsafe_ptr(),
+ Int32(m),
+ Int32(n),
+ Int32(kdim),
+
             grid_dim=(n // BN, m // BM), block_dim=(16, 16),
         )
         # commit + wait: remap a host-written input (synchronize() is not
@@ -232,11 +248,14 @@ def bench(ctx: DeviceContext, m: Int, n: Int, kdim: Int) raises:
 
 
 def gemm_tiled_bf16(
-    a: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DType.uint16], MutAnyOrigin],
-    c: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    m: Int, n: Int, kdim: Int,
+    a: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    b: Pointer[Scalar[DType.uint16], MutAnyOrigin],
+    c: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    m_dev: Int32, n_dev: Int32, kdim_dev: Int32,
 ):
+    var m = Int(m_dev)
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
     """Current 64x64/4x4 kernel with B stored as bf16 (u16<<16 -> f32 on
     the shared-memory fill) — halves the dominant B device traffic.
     EXACT for the DiT checkpoints (their weights ARE bf16)."""
@@ -261,25 +280,25 @@ def gemm_tiled_bf16(
         var ar = ia // BK
         var ac = ia % BK
         var a_src = (Int(block_idx.y) * BM + ar) * kdim + kb * BK + ac
-        As.store(ia, a.load[width=4](a_src))
+        As.unsafe_store(ia, a.unsafe_load[width=4](a_src))
         var ib = tid * 4
         var br = ib // BN
         var bc = ib % BN
         var b_src = (kb * BK + br) * n + Int(block_idx.x) * BN + bc
-        var raw = b.load[width=4](b_src).cast[DType.uint32]() << 16
-        Bs.store(ib, SIMD[DType.float32, 4](from_bits=raw))
+        var raw = b.unsafe_load[width=4](b_src).cast[DType.uint32]() << 16
+        Bs.unsafe_store(ib, SIMD[DType.float32, 4](from_bits=raw))
         barrier()
         for kk in range(BK):
-            var bv = Bs.load[width=TN](kk * BN + tx * TN)
+            var bv = Bs.unsafe_load[width=TN](kk * BN + tx * TN)
             acc0 += SIMD[DType.float32, TN](As[(ty * TM + 0) * BK + kk]) * bv
             acc1 += SIMD[DType.float32, TN](As[(ty * TM + 1) * BK + kk]) * bv
             acc2 += SIMD[DType.float32, TN](As[(ty * TM + 2) * BK + kk]) * bv
             acc3 += SIMD[DType.float32, TN](As[(ty * TM + 3) * BK + kk]) * bv
         barrier()
-    c.store((row0 + 0) * n + col0, acc0)
-    c.store((row0 + 1) * n + col0, acc1)
-    c.store((row0 + 2) * n + col0, acc2)
-    c.store((row0 + 3) * n + col0, acc3)
+    c.unsafe_store((row0 + 0) * n + col0, acc0)
+    c.unsafe_store((row0 + 1) * n + col0, acc1)
+    c.unsafe_store((row0 + 2) * n + col0, acc2)
+    c.unsafe_store((row0 + 3) * n + col0, acc3)
 
 
 def bench_bf16(ctx: DeviceContext, m: Int, n: Int, kdim: Int) raises:
@@ -297,7 +316,13 @@ def bench_bf16(ctx: DeviceContext, m: Int, n: Int, kdim: Int) raises:
     for it in range(4):
         var t0 = perf_counter_ns()
         ctx.enqueue_function[gemm_tiled_bf16](
-            ab.unsafe_ptr(), bb.unsafe_ptr(), cb.unsafe_ptr(), m, n, kdim,
+            ab.unsafe_ptr(),
+ bb.unsafe_ptr(),
+ cb.unsafe_ptr(),
+ Int32(m),
+ Int32(n),
+ Int32(kdim),
+
             grid_dim=(n // BN, m // BM), block_dim=(16, 16),
         )
         with ab.map_to_host() as h:
@@ -326,17 +351,35 @@ def bench_variant(ctx: DeviceContext, m: Int, n: Int, kdim: Int, variant: Int) r
         var t0 = perf_counter_ns()
         if variant == 0:
             ctx.enqueue_function[gemm_tiled](
-                ab.unsafe_ptr(), bb.unsafe_ptr(), cb.unsafe_ptr(), m, n, kdim,
+                ab.unsafe_ptr(),
+ bb.unsafe_ptr(),
+ cb.unsafe_ptr(),
+ Int32(m),
+ Int32(n),
+ Int32(kdim),
+
                 grid_dim=(n // BN, m // BM), block_dim=(16, 16),
             )
         elif variant == 1:
             ctx.enqueue_function[gemm_tiled_a](
-                ab.unsafe_ptr(), bb.unsafe_ptr(), cb.unsafe_ptr(), m, n, kdim,
+                ab.unsafe_ptr(),
+ bb.unsafe_ptr(),
+ cb.unsafe_ptr(),
+ Int32(m),
+ Int32(n),
+ Int32(kdim),
+
                 grid_dim=(n // 128, m // 64), block_dim=(16, 16),
             )
         else:
             ctx.enqueue_function[gemm_tiled_b](
-                ab.unsafe_ptr(), bb.unsafe_ptr(), cb.unsafe_ptr(), m, n, kdim,
+                ab.unsafe_ptr(),
+ bb.unsafe_ptr(),
+ cb.unsafe_ptr(),
+ Int32(m),
+ Int32(n),
+ Int32(kdim),
+
                 grid_dim=(n // 128, m // 128), block_dim=(16, 16),
             )
         with ab.map_to_host() as h:
@@ -379,11 +422,14 @@ def bench_variant(ctx: DeviceContext, m: Int, n: Int, kdim: Int, variant: Int) r
 
 
 def gemm_f16_v3(
-    a: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DType.uint16], MutAnyOrigin],
-    c: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    m: Int, n: Int, kdim: Int,
+    a: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    b: Pointer[Scalar[DType.uint16], MutAnyOrigin],
+    c: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    m_dev: Int32, n_dev: Int32, kdim_dev: Int32,
 ):
+    var m = Int(m_dev)
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
     var As = stack_allocation[
         BM * BK, Scalar[DType.float32], address_space = AddressSpace.SHARED
     ]()
@@ -405,33 +451,36 @@ def gemm_f16_v3(
         var ar = ia // BK
         var ac = ia % BK
         var a_src = (Int(block_idx.y) * BM + ar) * kdim + kb * BK + ac
-        As.store(ia, a.load[width=4](a_src))
+        As.unsafe_store(ia, a.unsafe_load[width=4](a_src))
         var ib = tid * 4
         var br = ib // BN
         var bc = ib % BN
         var b_src = (kb * BK + br) * n + Int(block_idx.x) * BN + bc
-        var raw = b.load[width=4](b_src)
-        Bs.store(ib, SIMD[DType.float16, 4](from_bits=raw))
+        var raw = b.unsafe_load[width=4](b_src)
+        Bs.unsafe_store(ib, SIMD[DType.float16, 4](from_bits=raw))
         barrier()
         for kk in range(BK):
-            var bv = Bs.load[width=TN](kk * BN + tx * TN).cast[DType.float32]()
+            var bv = Bs.unsafe_load[width=TN](kk * BN + tx * TN).cast[DType.float32]()
             acc0 += SIMD[DType.float32, TN](As[(ty * TM + 0) * BK + kk]) * bv
             acc1 += SIMD[DType.float32, TN](As[(ty * TM + 1) * BK + kk]) * bv
             acc2 += SIMD[DType.float32, TN](As[(ty * TM + 2) * BK + kk]) * bv
             acc3 += SIMD[DType.float32, TN](As[(ty * TM + 3) * BK + kk]) * bv
         barrier()
-    c.store((row0 + 0) * n + col0, acc0)
-    c.store((row0 + 1) * n + col0, acc1)
-    c.store((row0 + 2) * n + col0, acc2)
-    c.store((row0 + 3) * n + col0, acc3)
+    c.unsafe_store((row0 + 0) * n + col0, acc0)
+    c.unsafe_store((row0 + 1) * n + col0, acc1)
+    c.unsafe_store((row0 + 2) * n + col0, acc2)
+    c.unsafe_store((row0 + 3) * n + col0, acc3)
 
 
 def gemm_f16_v4(
-    a: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DType.uint16], MutAnyOrigin],
-    c: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    m: Int, n: Int, kdim: Int,
+    a: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    b: Pointer[Scalar[DType.uint16], MutAnyOrigin],
+    c: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    m_dev: Int32, n_dev: Int32, kdim_dev: Int32,
 ):
+    var m = Int(m_dev)
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
     var As = stack_allocation[
         BM * BK, Scalar[DType.float16], address_space = AddressSpace.SHARED
     ]()
@@ -453,16 +502,16 @@ def gemm_f16_v4(
         var ar = ia // BK
         var ac = ia % BK
         var a_src = (Int(block_idx.y) * BM + ar) * kdim + kb * BK + ac
-        As.store(ia, a.load[width=4](a_src).cast[DType.float16]())
+        As.unsafe_store(ia, a.unsafe_load[width=4](a_src).cast[DType.float16]())
         var ib = tid * 4
         var br = ib // BN
         var bc = ib % BN
         var b_src = (kb * BK + br) * n + Int(block_idx.x) * BN + bc
-        var raw = b.load[width=4](b_src)
-        Bs.store(ib, SIMD[DType.float16, 4](from_bits=raw))
+        var raw = b.unsafe_load[width=4](b_src)
+        Bs.unsafe_store(ib, SIMD[DType.float16, 4](from_bits=raw))
         barrier()
         for kk in range(BK):
-            var bv = Bs.load[width=TN](kk * BN + tx * TN).cast[DType.float32]()
+            var bv = Bs.unsafe_load[width=TN](kk * BN + tx * TN).cast[DType.float32]()
             acc0 += SIMD[DType.float32, TN](
                 As[(ty * TM + 0) * BK + kk].cast[DType.float32]()
             ) * bv
@@ -476,18 +525,21 @@ def gemm_f16_v4(
                 As[(ty * TM + 3) * BK + kk].cast[DType.float32]()
             ) * bv
         barrier()
-    c.store((row0 + 0) * n + col0, acc0)
-    c.store((row0 + 1) * n + col0, acc1)
-    c.store((row0 + 2) * n + col0, acc2)
-    c.store((row0 + 3) * n + col0, acc3)
+    c.unsafe_store((row0 + 0) * n + col0, acc0)
+    c.unsafe_store((row0 + 1) * n + col0, acc1)
+    c.unsafe_store((row0 + 2) * n + col0, acc2)
+    c.unsafe_store((row0 + 3) * n + col0, acc3)
 
 
 def gemm_f16_v5(
-    a: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DType.uint16], MutAnyOrigin],
-    c: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    m: Int, n: Int, kdim: Int,
+    a: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    b: Pointer[Scalar[DType.uint16], MutAnyOrigin],
+    c: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    m_dev: Int32, n_dev: Int32, kdim_dev: Int32,
 ):
+    var m = Int(m_dev)
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
     var As = stack_allocation[
         BM * BK, Scalar[DType.float16], address_space = AddressSpace.SHARED
     ]()
@@ -509,34 +561,37 @@ def gemm_f16_v5(
         var ar = ia // BK
         var ac = ia % BK
         var a_src = (Int(block_idx.y) * BM + ar) * kdim + kb * BK + ac
-        As.store(ia, a.load[width=4](a_src).cast[DType.float16]())
+        As.unsafe_store(ia, a.unsafe_load[width=4](a_src).cast[DType.float16]())
         var ib = tid * 4
         var br = ib // BN
         var bc = ib % BN
         var b_src = (kb * BK + br) * n + Int(block_idx.x) * BN + bc
-        var raw = b.load[width=4](b_src)
-        Bs.store(ib, SIMD[DType.float16, 4](from_bits=raw))
+        var raw = b.unsafe_load[width=4](b_src)
+        Bs.unsafe_store(ib, SIMD[DType.float16, 4](from_bits=raw))
         barrier()
         for kk in range(BK):
             # halv-multiplikasjon, f32-akkumulering
-            var bv = Bs.load[width=TN](kk * BN + tx * TN)
+            var bv = Bs.unsafe_load[width=TN](kk * BN + tx * TN)
             acc0 += (SIMD[DType.float16, TN](As[(ty * TM + 0) * BK + kk]) * bv).cast[DType.float32]()
             acc1 += (SIMD[DType.float16, TN](As[(ty * TM + 1) * BK + kk]) * bv).cast[DType.float32]()
             acc2 += (SIMD[DType.float16, TN](As[(ty * TM + 2) * BK + kk]) * bv).cast[DType.float32]()
             acc3 += (SIMD[DType.float16, TN](As[(ty * TM + 3) * BK + kk]) * bv).cast[DType.float32]()
         barrier()
-    c.store((row0 + 0) * n + col0, acc0)
-    c.store((row0 + 1) * n + col0, acc1)
-    c.store((row0 + 2) * n + col0, acc2)
-    c.store((row0 + 3) * n + col0, acc3)
+    c.unsafe_store((row0 + 0) * n + col0, acc0)
+    c.unsafe_store((row0 + 1) * n + col0, acc1)
+    c.unsafe_store((row0 + 2) * n + col0, acc2)
+    c.unsafe_store((row0 + 3) * n + col0, acc3)
 
 
 def gemm_f16_v6(
-    a: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[DType.uint16], MutAnyOrigin],
-    c: UnsafePointer[Scalar[DType.float32], MutAnyOrigin],
-    m: Int, n: Int, kdim: Int,
+    a: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    b: Pointer[Scalar[DType.uint16], MutAnyOrigin],
+    c: Pointer[Scalar[DType.float32], MutAnyOrigin],
+    m_dev: Int32, n_dev: Int32, kdim_dev: Int32,
 ):
+    var m = Int(m_dev)
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
     """v4 + dobbel-buffring: prefetch tile kb+1 mens kb regnes; én
     barrier per iterasjon (to f16-buffere = samme bytes som én f32)."""
     var As = stack_allocation[
@@ -563,9 +618,9 @@ def gemm_f16_v6(
     var bc = ib % BN
     # prime buffer 0
     var a_src0 = (Int(block_idx.y) * BM + ar) * kdim + ac
-    As.store(ia, a.load[width=4](a_src0).cast[DType.float16]())
+    As.unsafe_store(ia, a.unsafe_load[width=4](a_src0).cast[DType.float16]())
     var b_src0 = br * n + Int(block_idx.x) * BN + bc
-    Bs.store(ib, SIMD[DType.float16, 4](from_bits=b.load[width=4](b_src0)))
+    Bs.unsafe_store(ib, SIMD[DType.float16, 4](from_bits=b.unsafe_load[width=4](b_src0)))
     barrier()
     for kb in range(n_kb):
         var cur = (kb % 2) * BM * BK
@@ -574,11 +629,11 @@ def gemm_f16_v6(
             var nxt = ((kb + 1) % 2) * BM * BK
             var nxtb = ((kb + 1) % 2) * BK * BN
             var a_src = (Int(block_idx.y) * BM + ar) * kdim + (kb + 1) * BK + ac
-            As.store(nxt + ia, a.load[width=4](a_src).cast[DType.float16]())
+            As.unsafe_store(nxt + ia, a.unsafe_load[width=4](a_src).cast[DType.float16]())
             var b_src = ((kb + 1) * BK + br) * n + Int(block_idx.x) * BN + bc
-            Bs.store(nxtb + ib, SIMD[DType.float16, 4](from_bits=b.load[width=4](b_src)))
+            Bs.unsafe_store(nxtb + ib, SIMD[DType.float16, 4](from_bits=b.unsafe_load[width=4](b_src)))
         for kk in range(BK):
-            var bv = Bs.load[width=TN](curb + kk * BN + tx * TN).cast[DType.float32]()
+            var bv = Bs.unsafe_load[width=TN](curb + kk * BN + tx * TN).cast[DType.float32]()
             acc0 += SIMD[DType.float32, TN](
                 As[cur + (ty * TM + 0) * BK + kk].cast[DType.float32]()
             ) * bv
@@ -592,10 +647,10 @@ def gemm_f16_v6(
                 As[cur + (ty * TM + 3) * BK + kk].cast[DType.float32]()
             ) * bv
         barrier()
-    c.store((row0 + 0) * n + col0, acc0)
-    c.store((row0 + 1) * n + col0, acc1)
-    c.store((row0 + 2) * n + col0, acc2)
-    c.store((row0 + 3) * n + col0, acc3)
+    c.unsafe_store((row0 + 0) * n + col0, acc0)
+    c.unsafe_store((row0 + 1) * n + col0, acc1)
+    c.unsafe_store((row0 + 2) * n + col0, acc2)
+    c.unsafe_store((row0 + 3) * n + col0, acc3)
 
 
 def bench_wp19(ctx: DeviceContext, m: Int, n: Int, kdim: Int, variant: Int) raises:
@@ -619,22 +674,46 @@ def bench_wp19(ctx: DeviceContext, m: Int, n: Int, kdim: Int, variant: Int) rais
         var t0 = perf_counter_ns()
         if variant == 3:
             ctx.enqueue_function[gemm_f16_v3](
-                ab.unsafe_ptr(), bb.unsafe_ptr(), cb.unsafe_ptr(), m, n, kdim,
+                ab.unsafe_ptr(),
+ bb.unsafe_ptr(),
+ cb.unsafe_ptr(),
+ Int32(m),
+ Int32(n),
+ Int32(kdim),
+
                 grid_dim=(n // BN, m // BM), block_dim=(16, 16),
             )
         elif variant == 4:
             ctx.enqueue_function[gemm_f16_v4](
-                ab.unsafe_ptr(), bb.unsafe_ptr(), cb.unsafe_ptr(), m, n, kdim,
+                ab.unsafe_ptr(),
+ bb.unsafe_ptr(),
+ cb.unsafe_ptr(),
+ Int32(m),
+ Int32(n),
+ Int32(kdim),
+
                 grid_dim=(n // BN, m // BM), block_dim=(16, 16),
             )
         elif variant == 5:
             ctx.enqueue_function[gemm_f16_v5](
-                ab.unsafe_ptr(), bb.unsafe_ptr(), cb.unsafe_ptr(), m, n, kdim,
+                ab.unsafe_ptr(),
+ bb.unsafe_ptr(),
+ cb.unsafe_ptr(),
+ Int32(m),
+ Int32(n),
+ Int32(kdim),
+
                 grid_dim=(n // BN, m // BM), block_dim=(16, 16),
             )
         else:
             ctx.enqueue_function[gemm_f16_v6](
-                ab.unsafe_ptr(), bb.unsafe_ptr(), cb.unsafe_ptr(), m, n, kdim,
+                ab.unsafe_ptr(),
+ bb.unsafe_ptr(),
+ cb.unsafe_ptr(),
+ Int32(m),
+ Int32(n),
+ Int32(kdim),
+
                 grid_dim=(n // BN, m // BM), block_dim=(16, 16),
             )
         with ab.map_to_host() as h:

@@ -1,6 +1,6 @@
 # Mojo port of the dense building blocks the inference path actually uses:
 #   modules/norm.py      -> LayerNorm32, GroupNorm32, ChannelLayerNorm32
-#   modules/utils.py     -> modulate (zero/scale/convert_module are torch-only)
+#   modules/utils.py     -> modulate (training-only helpers are omitted)
 #   modules/sparse/linear.py       -> SparseLinear (+ dense linear core)
 #   modules/sparse/nonlinearity.py -> relu/silu/gelu (+ Sparse wrappers)
 #
@@ -12,7 +12,7 @@
 # no inference model uses it, and SparseLayerNorm's permute/reshape is
 # incompatible with nn.LayerNorm's shape contract (it would crash if called).
 
-from std.algorithm import parallelize
+from max.algorithm import parallelize
 from std.math import erf, exp, sqrt, tanh
 
 from trellis2_mojo.gpu.linear import GpuLinear
@@ -25,7 +25,7 @@ comptime F32 = DType.float32
 # -- linear -------------------------------------------------------------------
 
 def linear(x: Tensor[F32], weight: Tensor[F32], bias: Tensor[F32], has_bias: Bool = True) raises -> Tensor[F32]:
-    """y = x @ weight.T + bias over the last dim (torch F.linear).
+    """y = x @ weight.T + bias over the last dim.
     x: [..., Ci], weight: [Co, Ci], bias: [Co]. SIMD dot over Ci (WP10) —
     the x row and the weight row are both contiguous over i. Register
     tiling (pass 4): RU rows x OU out features per block share the x/w
@@ -85,12 +85,12 @@ def linear(x: Tensor[F32], weight: Tensor[F32], bias: Tensor[F32], has_bias: Boo
                 var a31 = SIMD[F32, W](0)
                 var i = 0
                 while i + W <= ci:
-                    var wv0 = wp.load[width=W](w_base0 + i)
-                    var wv1 = wp.load[width=W](w_base1 + i)
-                    var xv0 = xp.load[width=W](x_base0 + i)
-                    var xv1 = xp.load[width=W](x_base1 + i)
-                    var xv2 = xp.load[width=W](x_base2 + i)
-                    var xv3 = xp.load[width=W](x_base3 + i)
+                    var wv0 = wp.unsafe_load[width=W](w_base0 + i)
+                    var wv1 = wp.unsafe_load[width=W](w_base1 + i)
+                    var xv0 = xp.unsafe_load[width=W](x_base0 + i)
+                    var xv1 = xp.unsafe_load[width=W](x_base1 + i)
+                    var xv2 = xp.unsafe_load[width=W](x_base2 + i)
+                    var xv3 = xp.unsafe_load[width=W](x_base3 + i)
                     a00 += xv0 * wv0
                     a01 += xv0 * wv1
                     a10 += xv1 * wv0
@@ -109,20 +109,20 @@ def linear(x: Tensor[F32], weight: Tensor[F32], bias: Tensor[F32], has_bias: Boo
                 var s30 = a30.reduce_add()
                 var s31 = a31.reduce_add()
                 while i < ci:
-                    var w0i = wp[w_base0 + i]
-                    var w1i = wp[w_base1 + i]
-                    s00 += xp[x_base0 + i] * w0i
-                    s01 += xp[x_base0 + i] * w1i
-                    s10 += xp[x_base1 + i] * w0i
-                    s11 += xp[x_base1 + i] * w1i
-                    s20 += xp[x_base2 + i] * w0i
-                    s21 += xp[x_base2 + i] * w1i
-                    s30 += xp[x_base3 + i] * w0i
-                    s31 += xp[x_base3 + i] * w1i
+                    var w0i = wp[unsafe_offset=w_base0 + i]
+                    var w1i = wp[unsafe_offset=w_base1 + i]
+                    s00 += xp[unsafe_offset=x_base0 + i] * w0i
+                    s01 += xp[unsafe_offset=x_base0 + i] * w1i
+                    s10 += xp[unsafe_offset=x_base1 + i] * w0i
+                    s11 += xp[unsafe_offset=x_base1 + i] * w1i
+                    s20 += xp[unsafe_offset=x_base2 + i] * w0i
+                    s21 += xp[unsafe_offset=x_base2 + i] * w1i
+                    s30 += xp[unsafe_offset=x_base3 + i] * w0i
+                    s31 += xp[unsafe_offset=x_base3 + i] * w1i
                     i += 1
                 if has_bias:
-                    var b0 = bp[o]
-                    var b1 = bp[o + 1]
+                    var b0 = bp[unsafe_offset=o]
+                    var b1 = bp[unsafe_offset=o + 1]
                     s00 += b0
                     s01 += b1
                     s10 += b0
@@ -132,14 +132,14 @@ def linear(x: Tensor[F32], weight: Tensor[F32], bias: Tensor[F32], has_bias: Boo
                     s30 += b0
                     s31 += b1
                 var o_base = r0 * co + o
-                op[o_base] = s00
-                op[o_base + 1] = s01
-                op[o_base + co] = s10
-                op[o_base + co + 1] = s11
-                op[o_base + 2 * co] = s20
-                op[o_base + 2 * co + 1] = s21
-                op[o_base + 3 * co] = s30
-                op[o_base + 3 * co + 1] = s31
+                op[unsafe_offset=o_base] = s00
+                op[unsafe_offset=o_base + 1] = s01
+                op[unsafe_offset=o_base + co] = s10
+                op[unsafe_offset=o_base + co + 1] = s11
+                op[unsafe_offset=o_base + 2 * co] = s20
+                op[unsafe_offset=o_base + 2 * co + 1] = s21
+                op[unsafe_offset=o_base + 3 * co] = s30
+                op[unsafe_offset=o_base + 3 * co + 1] = s31
             else:
                 for oo in range(o, o + ou):
                     var w_base = oo * ci
@@ -148,15 +148,15 @@ def linear(x: Tensor[F32], weight: Tensor[F32], bias: Tensor[F32], has_bias: Boo
                         var accv = SIMD[F32, W](0)
                         var i = 0
                         while i + W <= ci:
-                            accv += xp.load[width=W](x_base + i) * wp.load[width=W](w_base + i)
+                            accv += xp.unsafe_load[width=W](x_base + i) * wp.unsafe_load[width=W](w_base + i)
                             i += W
                         var acc = accv.reduce_add()
                         while i < ci:
-                            acc += xp[x_base + i] * wp[w_base + i]
+                            acc += xp[unsafe_offset=x_base + i] * wp[unsafe_offset=w_base + i]
                             i += 1
                         if has_bias:
-                            acc += bp[oo]
-                        op[rr * co + oo] = acc
+                            acc += bp[unsafe_offset=oo]
+                        op[unsafe_offset=rr * co + oo] = acc
             o += ou
 
     # threshold tuned on the WP10 sampler case: many small linear calls per
@@ -182,7 +182,7 @@ def linear(x: Tensor[F32], weight: Tensor[F32], bias: Tensor[F32], has_bias: Boo
         var base = p * ci * NR
         for kk in range(ci):
             for j in range(NR):
-                bpkp[base + kk * NR + j] = wp[(n0 + j) * ci + kk]
+                bpkp[unsafe_offset=base + kk * NR + j] = wp[unsafe_offset=(n0 + j) * ci + kk]
 
     var n_gblocks = rows // MR
 
@@ -195,7 +195,7 @@ def linear(x: Tensor[F32], weight: Tensor[F32], bias: Tensor[F32], has_bias: Boo
         for m in range(MR):
             var xb = (r0 + m) * ci
             for kk in range(ci):
-                app[kk * MR + m] = xp[xb + kk]
+                app[unsafe_offset=kk * MR + m] = xp[unsafe_offset=xb + kk]
         for p in range(n_panels):
             var base = p * ci * NR
             var n0 = p * NR
@@ -208,9 +208,9 @@ def linear(x: Tensor[F32], weight: Tensor[F32], bias: Tensor[F32], has_bias: Boo
             var c30 = SIMD[F32, W](0)
             var c31 = SIMD[F32, W](0)
             for kk in range(ci):
-                var bv0 = bpkp.load[width=W](base + kk * NR)
-                var bv1 = bpkp.load[width=W](base + kk * NR + W)
-                var av = app.load[width=MR](kk * MR)
+                var bv0 = bpkp.unsafe_load[width=W](base + kk * NR)
+                var bv1 = bpkp.unsafe_load[width=W](base + kk * NR + W)
+                var av = app.unsafe_load[width=MR](kk * MR)
                 c00 += bv0 * SIMD[F32, W](av[0])
                 c01 += bv1 * SIMD[F32, W](av[0])
                 c10 += bv0 * SIMD[F32, W](av[1])
@@ -220,8 +220,8 @@ def linear(x: Tensor[F32], weight: Tensor[F32], bias: Tensor[F32], has_bias: Boo
                 c30 += bv0 * SIMD[F32, W](av[3])
                 c31 += bv1 * SIMD[F32, W](av[3])
             if has_bias:
-                var bb0 = bp.load[width=W](n0)
-                var bb1 = bp.load[width=W](n0 + W)
+                var bb0 = bp.unsafe_load[width=W](n0)
+                var bb1 = bp.unsafe_load[width=W](n0 + W)
                 c00 += bb0
                 c01 += bb1
                 c10 += bb0
@@ -231,14 +231,14 @@ def linear(x: Tensor[F32], weight: Tensor[F32], bias: Tensor[F32], has_bias: Boo
                 c30 += bb0
                 c31 += bb1
             var ob = r0 * co + n0
-            op.store(ob, c00)
-            op.store(ob + W, c01)
-            op.store(ob + co, c10)
-            op.store(ob + co + W, c11)
-            op.store(ob + 2 * co, c20)
-            op.store(ob + 2 * co + W, c21)
-            op.store(ob + 3 * co, c30)
-            op.store(ob + 3 * co + W, c31)
+            op.unsafe_store(ob, c00)
+            op.unsafe_store(ob + W, c01)
+            op.unsafe_store(ob + co, c10)
+            op.unsafe_store(ob + co + W, c11)
+            op.unsafe_store(ob + 2 * co, c20)
+            op.unsafe_store(ob + 2 * co + W, c21)
+            op.unsafe_store(ob + 3 * co, c30)
+            op.unsafe_store(ob + 3 * co + W, c31)
         # column tail (co % NR) for these rows via the dot path
         for oo in range(co_main, co):
             var w_base = oo * ci
@@ -247,15 +247,15 @@ def linear(x: Tensor[F32], weight: Tensor[F32], bias: Tensor[F32], has_bias: Boo
                 var accv = SIMD[F32, W](0)
                 var i = 0
                 while i + W <= ci:
-                    accv += xp.load[width=W](x_base + i) * wp.load[width=W](w_base + i)
+                    accv += xp.unsafe_load[width=W](x_base + i) * wp.unsafe_load[width=W](w_base + i)
                     i += W
                 var acc = accv.reduce_add()
                 while i < ci:
-                    acc += xp[x_base + i] * wp[w_base + i]
+                    acc += xp[unsafe_offset=x_base + i] * wp[unsafe_offset=w_base + i]
                     i += 1
                 if has_bias:
-                    acc += bp[oo]
-                op[rr * co + oo] = acc
+                    acc += bp[unsafe_offset=oo]
+                op[unsafe_offset=rr * co + oo] = acc
 
     parallelize[gemm_block](n_gblocks)
     # row tail (rows % MR): with RU == MR the last (partial) dot block is
@@ -327,44 +327,44 @@ struct LayerNorm32(Copyable, Movable):
             var sv = SIMD[F32, W](0)
             var i = 0
             while i + W <= c:
-                sv += xp.load[width=W](base + i)
+                sv += xp.unsafe_load[width=W](base + i)
                 i += W
             var mean = sv.reduce_add()
             while i < c:
-                mean += xp[base + i]
+                mean += xp[unsafe_offset=base + i]
                 i += 1
             mean /= Float32(c)
             var vv = SIMD[F32, W](0)
             i = 0
             while i + W <= c:
-                var dvec = xp.load[width=W](base + i) - mean
+                var dvec = xp.unsafe_load[width=W](base + i) - mean
                 vv += dvec * dvec
                 i += W
             var variance = vv.reduce_add()
             while i < c:
-                var d = xp[base + i] - mean
+                var d = xp[unsafe_offset=base + i] - mean
                 variance += d * d
                 i += 1
-            variance /= Float32(c)  # biased, as torch layer_norm
-            var inv_std = 1.0 / (variance + Float32(self.eps)) ** 0.5
+            variance /= Float32(c)  # population variance
+            var inv_std = 1.0 / sqrt(variance + Float32(self.eps))
             i = 0
             if self.affine:
                 while i + W <= c:
-                    op.store(
+                    op.unsafe_store(
                         base + i,
-                        (xp.load[width=W](base + i) - mean) * inv_std * wp.load[width=W](i)
-                        + bp.load[width=W](i),
+                        (xp.unsafe_load[width=W](base + i) - mean) * inv_std * wp.unsafe_load[width=W](i)
+                        + bp.unsafe_load[width=W](i),
                     )
                     i += W
                 while i < c:
-                    op[base + i] = (xp[base + i] - mean) * inv_std * wp[i] + bp[i]
+                    op[unsafe_offset=base + i] = (xp[unsafe_offset=base + i] - mean) * inv_std * wp[unsafe_offset=i] + bp[unsafe_offset=i]
                     i += 1
             else:
                 while i + W <= c:
-                    op.store(base + i, (xp.load[width=W](base + i) - mean) * inv_std)
+                    op.unsafe_store(base + i, (xp.unsafe_load[width=W](base + i) - mean) * inv_std)
                     i += W
                 while i < c:
-                    op[base + i] = (xp[base + i] - mean) * inv_std
+                    op[unsafe_offset=base + i] = (xp[unsafe_offset=base + i] - mean) * inv_std
                     i += 1
         return out^
 
@@ -426,46 +426,46 @@ struct GroupNorm32(Copyable, Movable):
             var sv = SIMD[F32, W](0)
             var i = 0
             while i + W <= cnt:
-                sv += xp.load[width=W](start + i)
+                sv += xp.unsafe_load[width=W](start + i)
                 i += W
             var mean = sv.reduce_add()
             while i < cnt:
-                mean += xp[start + i]
+                mean += xp[unsafe_offset=start + i]
                 i += 1
             mean /= Float32(cnt)
             var vv = SIMD[F32, W](0)
             i = 0
             while i + W <= cnt:
-                var dvec = xp.load[width=W](start + i) - mean
+                var dvec = xp.unsafe_load[width=W](start + i) - mean
                 vv += dvec * dvec
                 i += W
             var variance = vv.reduce_add()
             while i < cnt:
-                var dd = xp[start + i] - mean
+                var dd = xp[unsafe_offset=start + i] - mean
                 variance += dd * dd
                 i += 1
             variance /= Float32(cnt)
-            var inv_std = 1.0 / (variance + eps) ** 0.5
+            var inv_std = 1.0 / sqrt(variance + eps)
             var mv = SIMD[F32, W](mean)
             var isv = SIMD[F32, W](inv_std)
             for ci in range(g * cg, (g + 1) * cg):
                 var cbase = (b * c + ci) * sp
                 var s = 0
                 if affine:
-                    var wv = SIMD[F32, W](wp[ci])
-                    var bv = SIMD[F32, W](bp[ci])
+                    var wv = SIMD[F32, W](wp[unsafe_offset=ci])
+                    var bv = SIMD[F32, W](bp[unsafe_offset=ci])
                     while s + W <= sp:
-                        op.store(cbase + s, (xp.load[width=W](cbase + s) - mv) * isv * wv + bv)
+                        op.unsafe_store(cbase + s, (xp.unsafe_load[width=W](cbase + s) - mv) * isv * wv + bv)
                         s += W
                     while s < sp:
-                        op[cbase + s] = (xp[cbase + s] - mean) * inv_std * wp[ci] + bp[ci]
+                        op[unsafe_offset=cbase + s] = (xp[unsafe_offset=cbase + s] - mean) * inv_std * wp[unsafe_offset=ci] + bp[unsafe_offset=ci]
                         s += 1
                 else:
                     while s + W <= sp:
-                        op.store(cbase + s, (xp.load[width=W](cbase + s) - mv) * isv)
+                        op.unsafe_store(cbase + s, (xp.unsafe_load[width=W](cbase + s) - mv) * isv)
                         s += W
                     while s < sp:
-                        op[cbase + s] = (xp[cbase + s] - mean) * inv_std
+                        op[unsafe_offset=cbase + s] = (xp[unsafe_offset=cbase + s] - mean) * inv_std
                         s += 1
 
         var n_items = n * groups
@@ -505,7 +505,7 @@ struct ChannelLayerNorm32(Copyable, Movable):
         var bp = self.inner.bias.data.unsafe_ptr()
         var affine = self.inner.affine
         var eps = Float32(self.inner.eps)
-        var chunks_per_b = (sp + CH - 1) // CH
+        var chunks_per_b = ((sp + CH) - 1) // CH
 
         @parameter
         def item(w: Int):
@@ -517,36 +517,36 @@ struct ChannelLayerNorm32(Copyable, Movable):
             while s + W <= s1:
                 var mv = SIMD[F32, W](0)
                 for ci in range(c):
-                    mv += xp.load[width=W](bbase + ci * sp + s)
+                    mv += xp.unsafe_load[width=W](bbase + ci * sp + s)
                 mv /= Float32(c)
                 var vv = SIMD[F32, W](0)
                 for ci in range(c):
-                    var dv = xp.load[width=W](bbase + ci * sp + s) - mv
+                    var dv = xp.unsafe_load[width=W](bbase + ci * sp + s) - mv
                     vv += dv * dv
                 vv /= Float32(c)
                 var inv = 1.0 / sqrt(vv + eps)
                 for ci in range(c):
-                    var o = (xp.load[width=W](bbase + ci * sp + s) - mv) * inv
+                    var o = (xp.unsafe_load[width=W](bbase + ci * sp + s) - mv) * inv
                     if affine:
-                        o = o * SIMD[F32, W](wp[ci]) + SIMD[F32, W](bp[ci])
-                    op.store(bbase + ci * sp + s, o)
+                        o = o * SIMD[F32, W](wp[unsafe_offset=ci]) + SIMD[F32, W](bp[unsafe_offset=ci])
+                    op.unsafe_store(bbase + ci * sp + s, o)
                 s += W
             while s < s1:
                 var mean: Float32 = 0
                 for ci in range(c):
-                    mean += xp[bbase + ci * sp + s]
+                    mean += xp[unsafe_offset=bbase + ci * sp + s]
                 mean /= Float32(c)
                 var variance: Float32 = 0
                 for ci in range(c):
-                    var d = xp[bbase + ci * sp + s] - mean
+                    var d = xp[unsafe_offset=bbase + ci * sp + s] - mean
                     variance += d * d
                 variance /= Float32(c)
-                var inv_std = 1.0 / (variance + eps) ** 0.5
+                var inv_std = 1.0 / sqrt(variance + eps)
                 for ci in range(c):
-                    var v = (xp[bbase + ci * sp + s] - mean) * inv_std
+                    var v = (xp[unsafe_offset=bbase + ci * sp + s] - mean) * inv_std
                     if affine:
-                        v = v * wp[ci] + bp[ci]
-                    op[bbase + ci * sp + s] = v
+                        v = v * wp[unsafe_offset=ci] + bp[unsafe_offset=ci]
+                    op[unsafe_offset=bbase + ci * sp + s] = v
                 s += 1
 
         var n_items = n * chunks_per_b
@@ -569,12 +569,12 @@ def _silu(v: Float32) raises -> Float32:
 
 
 def _gelu(v: Float32) raises -> Float32:
-    # torch nn.GELU default (approximate='none'): 0.5 x (1 + erf(x / sqrt(2)))
+    # Exact GELU: 0.5 x (1 + erf(x / sqrt(2)))
     return 0.5 * v * (1.0 + erf(v * 0.70710678118654752440))
 
 
 def _gelu_tanh(v: Float32) raises -> Float32:
-    # torch nn.GELU(approximate='tanh'), used by the FFNs
+    # Tanh-approximated GELU used by the FFNs
     var inner = 0.7978845608028654 * (v + 0.044715 * v * v * v)
     return 0.5 * v * (1.0 + tanh(inner))
 
@@ -606,36 +606,36 @@ def activation(x: Tensor[F32], kind: Int) raises -> Tensor[F32]:
         if kind == ACT_RELU:
             var zero = SIMD[F32, W](0)
             while i + W <= hi:
-                op.store(i, max(xp.load[width=W](i), zero))
+                op.unsafe_store(i, max(xp.unsafe_load[width=W](i), zero))
                 i += W
             while i < hi:
-                op[i] = xp[i] if xp[i] > 0 else 0
+                op[unsafe_offset=i] = xp[unsafe_offset=i] if xp[unsafe_offset=i] > 0 else 0
                 i += 1
         elif kind == ACT_SILU:
             while i + W <= hi:
-                var v = xp.load[width=W](i)
-                op.store(i, v / (1.0 + exp(-v)))
+                var v = xp.unsafe_load[width=W](i)
+                op.unsafe_store(i, v / (1.0 + exp(-v)))
                 i += W
             while i < hi:
-                op[i] = xp[i] / (1.0 + exp(-xp[i]))
+                op[unsafe_offset=i] = xp[unsafe_offset=i] / (1.0 + exp(-xp[unsafe_offset=i]))
                 i += 1
         elif kind == ACT_GELU:
             while i + W <= hi:
-                var v = xp.load[width=W](i)
-                op.store(i, 0.5 * v * (1.0 + erf(v * 0.70710678118654752440)))
+                var v = xp.unsafe_load[width=W](i)
+                op.unsafe_store(i, 0.5 * v * (1.0 + erf(v * 0.70710678118654752440)))
                 i += W
             while i < hi:
-                op[i] = 0.5 * xp[i] * (1.0 + erf(xp[i] * 0.70710678118654752440))
+                op[unsafe_offset=i] = 0.5 * xp[unsafe_offset=i] * (1.0 + erf(xp[unsafe_offset=i] * 0.70710678118654752440))
                 i += 1
         else:
             while i + W <= hi:
-                var v = xp.load[width=W](i)
+                var v = xp.unsafe_load[width=W](i)
                 var inner = 0.7978845608028654 * (v + 0.044715 * v * v * v)
-                op.store(i, 0.5 * v * (1.0 + tanh(inner)))
+                op.unsafe_store(i, 0.5 * v * (1.0 + tanh(inner)))
                 i += W
             while i < hi:
-                var s = 0.7978845608028654 * (xp[i] + 0.044715 * xp[i] * xp[i] * xp[i])
-                op[i] = 0.5 * xp[i] * (1.0 + tanh(s))
+                var s = 0.7978845608028654 * (xp[unsafe_offset=i] + 0.044715 * xp[unsafe_offset=i] * xp[unsafe_offset=i] * xp[unsafe_offset=i])
+                op[unsafe_offset=i] = 0.5 * xp[unsafe_offset=i] * (1.0 + tanh(s))
                 i += 1
 
     var n_chunks = (n + CH - 1) // CH
@@ -677,13 +677,13 @@ def modulate(x: Tensor[F32], shift: Tensor[F32], scale: Tensor[F32]) raises -> T
             var xb = (b * l + j) * c
             var ci = 0
             while ci + W <= c:
-                op.store(
+                op.unsafe_store(
                     xb + ci,
-                    xp.load[width=W](xb + ci) * (1.0 + scp.load[width=W](mb + ci))
-                    + shp.load[width=W](mb + ci),
+                    xp.unsafe_load[width=W](xb + ci) * (1.0 + scp.unsafe_load[width=W](mb + ci))
+                    + shp.unsafe_load[width=W](mb + ci),
                 )
                 ci += W
             while ci < c:
-                op[xb + ci] = xp[xb + ci] * (1.0 + scp[mb + ci]) + shp[mb + ci]
+                op[unsafe_offset=xb + ci] = xp[unsafe_offset=xb + ci] * (1.0 + scp[unsafe_offset=mb + ci]) + shp[unsafe_offset=mb + ci]
                 ci += 1
     return out^

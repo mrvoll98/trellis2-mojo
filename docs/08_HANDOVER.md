@@ -1,92 +1,41 @@
 # 08 — Handover: TRELLIS.2 → Mojo-port
 
-Skrevet 2026-07-07, oppdatert 2026-07-12 (WP11 steg 2–15 — GPU-spor: golden 27.4 min → 4.1 min = 6.74x; 16-bits vektlagring bit-eksakt. FASE 2/WP15–17: teksturert GLB via vertex-attributter + mesh-postprosess i 7 revisjoner (endelig: fill → non-manifold-repair → remove_small(1e-5) → fill → sprekk-SYING → fill → paritets-unify + unit-normaler) + 1024-KASKADEN m/hodegruppert sdpa, ADR 0008. PRIKK-SAKEN: A/B avgjort — oppstrøms teksturerte GLB har SAMME prikker (modellens natur); v7-sying sveiset 24 798/30 230 vertekser (randkanter −72/−73 %), og WP18-REMESHEN (narrow-band dual contouring, `--remesh`, kun 512 foreløpig) gir GARANTERT 0 randkanter — to GLB-kandidater venter brukerens visuelle valg, se ÅPEN SAK-seksjonen).
-Alt under her er verifisert kjørende på denne maskinen (macOS arm64,
-M4 Pro — Metal-GPU-en brukes nå av WP11-stien bak env-flagg). Dette
-dokumentet er nok til å plukke opp arbeidet uten annen kontekst — les det
-sammen med [06_MASTER_PLAN.md](06_MASTER_PLAN.md) (arbeidspakker) og
-[07_PORT_TRACKER.md](07_PORT_TRACKER.md) (fil-for-fil-status).
+Skrevet 2026-07-07; implementasjonsjournalen under dekker porteringen,
+Metal-optimaliseringene og remesh-arbeidet i juli 2026.
 
-## Tilstand: WP1–WP10 + WP9 del 3 + WP12–WP15 ferdig — REN-MOJO-SPORET ER I MÅL, FASE 2 STARTET
+## Gjeldende tilstand — 2026-08-11
 
-Hele ADR 0007-målet er nådd: pipeline-kjøringen er ren Mojo fra PAM-fil til
-OBJ/npz — eneste Python i runneren er `torch.randn` (bevisst beholdt for
-støy-strøm-kompatibilitet med originalen). Python/torch ellers kun i
-tests/parity og benchmarks. WP11 steg 2–15 er utført (2026-07-10/11):
-den tilede Metal-GEMM-en er WIRET BAK `linear`, SDPA kjører som
-GEMM-komposisjon på GPU-en for BÅDE dense MHA (ss_flow) og
-enkeltsegment sparse MHA (B=1-slat, q-padding), FFN-ene kjeder
-lin→gelu→lin med intermediatet device-resident, sparse conv har en
-CSR-gather-kjerne med rad-par-registerblokking (steg 6+9,
-decode-stadiet), HELE self-attention kjeder qkv→bias/rms/rope→sdpa→out
-device-resident (steg 7), cross-attention kjeder q-siden
-device-resident med host-pakket kv (steg 8), og HELE cross-blokken
-(begge DiT-ene) kjører device-resident med glue som GPU-kjerner og én
-transfer-rundtur per blokk (steg 10), CSR-en spatial-caches (steg 11)
-og BEGGE DiT-forwardene holder x device-resident over alle 30 blokker
-(steg 12) — alt bak env-flagget `TRELLIS2_GPU=1` (CPU-fallback som
-default) med paritetstester i suiten
-(`test-wp11`/`test-wp11-attn`/`test-wp11-conv`) — se WP11-seksjonene
-under og i 06_MASTER_PLAN. GEMM-tuning og fp16-som-ytelse er MÅLT DØDE
-og lukket (steg 11-negativene); windowed-batching STRØKET (slat-DiT-en
-er attn_mode='full' overalt). Steg 14+15 (2026-07-11) lagrer vektene i
-16 bits på device når det er bit-eksakt (bf16 for DiT-ene, f16 for
-unet-dekoderne — GEMM-W^T OG conv-vekten) — halverer
-device-vektavtrykket, bit-identisk output; conv-gatheren fikk attpåtil
-1.13–1.14x på de vekt-tunge formene (decode 17→14–15 s).
-FASE 2 (ADR 0008): WP15 (teksturert GLB via vertex-attributter),
-WP16 (mesh-postprosess i 7 revisjoner — fyll/repair/fragment-fjerning/
-sprekk-sying/unify/unit-normaler, se egen seksjon) og WP17
-(**1024-kaskaden**: `--pipeline 1024` gir 4.00x flere voxels på
-13.9 min; sjette Metal-felle probet → hodegruppert sdpa) er FERDIGE —
-se egne seksjoner. Gjenstående spor: WP0 golden outputs (krever
-CUDA-maskin); UV-baking-stien (cumesh/nvdiffrast/xatlas) forblir
-utenfor scope per ADR 0008 (kun meningsfull sammen med decimering).
-Ytelsespass 7+8 (2026-07-09) tok
-e2e-smoken (steps 2) fra 627 til 252 s; WP11-flagget tar den videre
-til 72 s = 3.50x, og den FULLE kvalitetskjøringen (12 steg + tekstur)
-er GOLDEN GPU-VERIFISERT: 27.4 min → **4.1 min = 6.74x**, geometrisk
-i praksis samme mesh som CPU-goldenen (se WP11-seksjonene).
+Pipeline-kjøringen er nå Mojo fra PAM-input til OBJ, NPZ og GLB. Den bruker
+native CLI-tolking, prosjektets egen deterministiske normalfordelings-RNG,
+direkte safetensors-lasting og en native ZIP/NumPy-skriver. Python-objektbroen,
+hybrid-sampleren, framework-referansetestene og benchmarkdriveren er fjernet.
+Pixi-miljøet har `mojo ==1.0.0` og minimal `max-core ==26.5.0` for
+`max.algorithm`/`max.gpu`, uten den brede `modular`-metapakken.
 
-**Alt under modellnivået, alle inferens-modellene OG hele den modellvendte
-pipeline-kjeden (shape → cascade → tekstur) er portert til Mojo og
-paritetsverifisert mot torch-originalen** (`SparseStructureFlowModel` dense
-DiT, `SparseStructureDecoder` SS-VAE-dekoder, `SLatFlowModel` sparse DiT,
-`SparseUnetVaeDecoder`/FDG-hodet for sc_vaes, og
-`trellis2_mojo/pipelines/image_to_3d.mojo`). Hver ported komponent
-sammenlignes op-for-op mot original PyTorch-kode med seedede tilfeldige
-data og ekte vekter.
-
-```
-pixi run test-all        # hele suiten (18 testfiler, alle grønne per handover)
-pixi run mojo --version  # Mojo 1.0.0b2 (låst i pixi.toml)
+```sh
+pixi install
+pixi run mojo --version  # Mojo 1.0.0 (ed45d567)
+pixi run test-all        # 8 native Mojo-oppgaver
+pixi run e2e -- bilde.pam [--seed N] [--steps N] [--out prefix] \
+  [--no-tex] [--pipeline 512|1024] [--remesh] [--simplify-faces N]
 ```
 
-Enkelt-tester: `test-sparse`, `test-parity`, `test-flow-euler`, `test-wp4`,
-`test-wp5`, `test-wp6`, `test-wp7`, `test-wp8`, `test-wp9`, `test-mesh`,
-`test-wp13`, `test-wp14`, `test-wp15`, `test-wp16`, `test-wp18`,
-`test-wp11`, `test-wp11-attn`, `test-wp11-conv`
-(se pixi.toml; test-mesh/wp13–wp16/wp18/wp11* er OGSÅ i test-all — raske
-og cache-uavhengige; wp11-testene krever Metal-GPU-en og SKIP-er høylytt
-uten).
-Benchmarks: `pixi run bench` (WP10, se `docs/benchmarks/RESULTS.md`).
-Ende-til-ende: `pixi run e2e -- bilde.pam [--seed N] [--steps N] [--out
-prefix] [--no-tex] [--pipeline 512|1024]` (WP9 del 3 steg 5; PAM P7 RGBA
-siden WP14 — PNG→PAM-énlinjer i README_MOJO — + HF-cachen). Med tekstur
-skrives .obj + _texvoxels.npz + **.glb** (WP15 — teksturert, direkte
-viewbar); `--pipeline 1024` kjører oppstrøms 1024_cascade (WP17 —
-~4x flere voxels).
-Med `--remesh` (WP18) byttes GLB-postprosessen mot narrow-band dual
-contouring (garantert tett flate — se egen seksjon).
-Ekte sjekkpunkter: `pixi run test-real` — laster ALLE pipeline-modellene fra
-den lokale HF-cachen (safetensors bf16/fp16 → f32, ren Mojo siden WP12) og
-sammenligner fulle forwards mot torch-originalen; bevisst IKKE i test-all
-(leser ~10 GB per kjøring, ~5 min). Kondisjonering: `pixi run test-cond` —
-ren-Mojo DINOv3 (WP13) med ekte ViT-L-vekter mot originalens ekstraktor
-(laster 2×300M fra HF-cachen; heller ikke i test-all; liten-config-paritet
-ligger i test-wp13 som ER i test-all). Lasting: `pixi run test-io` — ren-Mojo
-safetensors/JSON/HF-cache mot ckpt_io.py, bit-identisk på alle 8
-sjekkpunktene (~14 GB lest; heller ikke i test-all).
+`test-all` dekker runtime/RNG/NPZ, sparse grunndata, hullfylling, remesh,
+QEM-decimering og tre Metal CPU-vs-GPU-kontroller. Se
+[PURE_MOJO_RUNTIME.md](PURE_MOJO_RUNTIME.md)
+for fjerningen og kompatibilitetsnotatet for frø.
+
+Før referanseharnessen ble tatt ut, bestod den gamle 18-oppgaverssuiten og
+de tre cache-tunge kontrollene på stabil Mojo 1.0.0. Åtte produksjons-
+sjekkpunkter, totalt 7 483 411 862 verdier, ble bekreftet bit-identiske i
+den native lastestien. Dette er beholdt som migreringsbevis, ikke som
+gjeldende testkommandoer.
+
+## Historisk implementasjonsjournal
+
+Resten av dokumentet er et arkiv over hvordan porten ble bygget og validert.
+Navn på fjernede filer, oppgaver og tidligere rammeverk beskriver historiske
+mellomsteg. README og PURE_MOJO_RUNTIME er sannhetskilden for dagens bruk.
 
 ### Portert (trellis2_mojo/)
 
@@ -111,16 +60,16 @@ sjekkpunktene (~14 GB lest; heller ikke i test-all).
 | `models/sc_vaes/fdg_vae.mojo` | **WP8.4**: `fdg_head` (FlexiDualGrid-transformene) |
 | `meshing/fdg_mesh.mojo` | **WP9 del 3 steg 4**: `flexible_dual_grid_to_mesh` i REN Mojo (port av trellis-mac-stubben, «identical output to the CUDA version for inference») — Dict-basert koordinatoppslag (pakket 21-bit-nøkkel), kant-nabo-tabell, quad-bygging i (i, axis)-rekkefølge, begge split-moduser (split_weight = pipeline-stien, normal-justering for kompletthet) + `write_obj`. MERK: 0 quads → 0 vertices (stubbens early-out) |
 | `pipelines/image_to_3d.mojo` | **WP9 del 1+2**: SSFlowVelocity/SlatFlowVelocity-adaptere, sample_sparse_structure, occupancy_to_coords, sample_slat, decode_shape, cascade_coords, normalize_slat, decode_tex |
-| `../run_image_to_3d.mojo` (repo-rot) | **WP9 del 3 steg 5**: ende-til-ende-runner, Mojo-vert (`pixi run e2e -- bilde.pam [--seed N] [--steps N] [--out prefix] [--no-tex]`, PAM P7 siden WP14), 512-pipelinen: cond → ss → shape-slat → tex-slat → decode → ren-Mojo-mesh → OBJ + tex-voxels-npz. Params/normalisering fra pipeline.json; én modell lastet om gangen (stage-funksjoner → ASAP-frigjøring); støy trekkes fra torch-strømmen i oppstrøms rekkefølge (seed ETTER cond — se RNG-notatet i filheaderen) |
-| `samplers/` | FlowEuler + CFG + guidance-interval (VelocityModel-trait), PyVelocityModel (Mojo-løkke driver torch-modell) |
-| `interop.mojo` | tensor/intmatrix ↔ torch-broer — omskrevet til peker-kopi (`data_ptr()` → `UnsafePointer(unsafe_from_address=...)`, SIMD-løkke) fordi element-vis PythonObject-konvertering var uholdbar for 1.3B-vekter; bit-identiske verdier, hele suiten mye raskere |
-| `checkpoints.mojo` | **WP9 del 3 steg 2, REN MOJO siden WP12**: bygger alle pipeline-modellene fra de EKTE sjekkpunktene via `io/`-laget — ingen Python i lastestien. `load_dinov3()` (WP13) leser config+vekter fra facebook-repoets snapshot. `ckpt_io.py` finnes fortsatt, men KUN som torch-referanse for paritetstestene (test-io/test-real) |
+| `../run_image_to_3d.mojo` (repo-rot) | Ende-til-ende-runner: cond → ss → shape-slat → tex-slat → decode → mesh → OBJ + NPZ + GLB. Native RNG og eksport siden 2026-08-11. |
+| `samplers/` | FlowEuler + CFG + guidance-interval via `VelocityModel`-trait. Den historiske hybridadapteren er fjernet. |
+| `interop.mojo` | **Fjernet 2026-08-11.** Alle produksjonsgrenser er native Mojo. |
+| `checkpoints.mojo` | Bygger alle pipeline-modellene direkte fra safetensors via det native `io/`-laget. |
 | `io/json.mojo` | **WP12**: mini-JSON-parser (arena/indeks-basert JsonDoc, ingen rekursiv verditype) — objekter/lister/strenger (escapes inkl. \uXXXX + surrogatpar), tall (Int-mantisse + eksakt 10-potens → samme f64 som strtod for ≤18 sifre), bool/null. Nok for safetensors-headere, ckpt-configer og pipeline.json |
 | `io/safetensors.mojo` | **WP12**: ren-Mojo safetensors→f32-leser. Per-tensor sekvensiell lesing i offset-rekkefølge (macOS capper read() på 2 GiB — hele filen kan IKKE slurpes; gir også lavere peak: dict + én rå-chunk). bf16 = u16<<16 via `SIMD(from_bits=)`, f16 = hardware-cast, alignment=1-laster (data-seksjonen er ualignert). BIT-identisk med ckpt_io.py på alle 8 sjekkpunktene |
 | `io/hf_cache.mojo` | **WP12**: HF-cache-oppslag i ren Mojo (getenv/listdir/sort — samme snapshot-valg som ckpt_io's glob), ckpt_base med kryss-repo-formen, load_config_json/pipeline_config_json/model_path |
-| `io/state_dict.mojo` | **WP12**: `StateDict`-fasade — ALLE loadere tar denne. `@implicit`-ctor fra PythonObject (paritetstestene sender torch-dicts uendret) eller Mojo-Dict fra safetensors-leseren (runner-stien) |
+| `io/state_dict.mojo` | Native `StateDict`-fasade over Mojo `Dict`; alle loadere bruker denne. |
 | `models/dinov3.mojo` | **WP13**: DINOv3 ViT-L/16 i REN Mojo, speiler transformers-implementasjonen slik ekstraktoren driver den — patch-conv 16×16 som im2col+`linear`, [cls; 4 reg; patches], 2D-RoPE theta=100 (inv_freq over head_dim/4, vinkelrad [y-del, x-del] + tile(2), rotate_half-splitt — IKKE parvis interleave som modell-ropene; kun patch-tokens roteres; pos_embed_rescale er trenings-augment og hoppes over i eval), separate q/k/v (k UTEN bias), LayerScale, eksakt-erf gelu-MLP (ikke-gated), slutt-LN uten affine (modellens `norm`-vekter brukes aldri av ekstraktoren og leses ikke). `dinov3_from`-loader med HF-nøkkelnavn; gjenbruker `linear`/`LayerNorm32`/`dense_sdpa_q_k_v` |
-| `pipelines/conditioning.mojo` | **WP9 del 3 steg 3, HELT ren Mojo siden WP13+WP14**: `ImageConditioner.get_cond(path, res)` → [1, L, 1024]-cond (+ `zeros_like_cond` for neg_cond) — PAM-dekoding → preprocess → Lanczos/normalisering → Mojo-ViT, ingen Python. rembg AVVIST per ADR 0007 (RGBA-krav). `cond_io.py` er KUN PIL/torch-referanse for paritetstestene (samme rolle som ckpt_io.py) |
+| `pipelines/conditioning.mojo` | `ImageConditioner.get_cond(path, res)` → [1, L, 1024]-cond: PAM-dekoding → preprocess → Lanczos/normalisering → Mojo-ViT. rembg er avvist per ADR 0007 (RGBA-krav). |
 | `io/image.mojo` | **WP14**: PAM P7- og PPM P6-lesere (8-bit, DEPTH 3/4), `read_image`-dispatch på magic bytes. PNG er et dokumentert konverteringssteg (README_MOJO) — ren-Mojo PNG-dekoder forble bevisst ugjort (eget beslutningspunkt per ADR 0007) |
 | `imaging/resize.mojo` | **WP14**: PIL-EKSAKT Lanczos (a=3): Pillows fixed-point-numerikk (PRECISION_BITS=22, koeffisienter kvantisert med round-half-away, clip8, horisontal→vertikal med u8-kvantisering MELLOM passene) + RGBa-rundturen PIL gjør for RGBA (MULDIV255-premultiply → resample → trunkerende dedivisjon, alpha 0/255 passthrough; funnet empirisk — uten den bommer ~70 % av pikslene) + copy()-kortslutning ved uendret størrelse FØR rundturen. BIT-identisk med PIL på alle testcaser |
 | `imaging/preprocess.mojo` | **WP14**: alpha-grenen av preprocess_image + `cond_pixels` — >1024-nedskalering (int-trunkert målstørrelse), alpha-bbox (>204, dvs. 0.8·255-f64-semantikken), kvadratisk crop med PIL-avrunding (round-half-even!) og nullpadding utenfor bildet, premultiply i f32 med u8-trunkering (numpy astype), ImageNet-normalisering → [1,3,R,R]. BIT-identisk mot cond_io/PIL på begge stier |
@@ -174,7 +123,11 @@ attention også gjøre.**
    split 1 velges alltid. WP18-porten implementerer intensjonen
    (|n(tri1)·n(tri2)| per reell splitt) og dokumenterer avviket.
 
-## Mojo 1.0.0b2-syntaks (lært via kompilatoren — gjelder all ny kode)
+## Mojo-syntaksnotater (opprinnelig kartlagt på 1.0.0b2)
+
+Punktene under er historiske regler som fortsatt forklarer mye av koden.
+For den gjeldende stabile 1.0-API-en og alle endringene som ble gjort under
+migreringen, se [MOJO_NIGHTLY_MIGRATION.md](MOJO_NIGHTLY_MIGRATION.md).
 
 - `fn` er FJERNET — kun `def`, og `raises` må angis eksplisitt (nesten alt
   vårt raiser). `alias` → `comptime`.
@@ -1083,8 +1036,8 @@ steps 8 → **160 s** (ss 76, slat 26, tex 16; 1931 @32³), steps 10 →
 en LEGITIM oppstrøms-skrue som gir et ANNET (ikke driftet) resultat —
 1931/1849 mot 1857 er forskjellige samplingpunkter, ikke feil.
 Artefakter for brukerens dom: `outputs/shoe_512_s8.glb` / `_s10.glb`
-mot `_r256.glb` (12 steg). Gjenstående kandidat: QEM-decimering
-(egen WP, simplify.cu 582 linjer lokalt).
+mot `_r256.glb` (12 steg). QEM-decimeringen som var neste kandidat er
+nå implementert i WP20 under.
 
 ## FASE 2 / WP18 — remesh-grenen: narrow-band dual contouring (FERDIG 2026-07-12, @512)
 
@@ -1146,8 +1099,8 @@ posisjonsbaserte og virker uendret på den nye topologien.
   Avveining: større band svelger bredere hull men glatter mer
   strikke-detalj (projeksjonen henter det meste tilbake;
   skallvolumet vokser 0.00067→0.00102→0.00137 med band).
-  Gjenværende skruer: project_back opp (0.95) for skarphet, DC på
-  høyere oppløsning enn 512, decimering (utenfor scope). Hull som
+  Gjenværende skruer: project_back opp (0.95) for skarphet og DC på
+  høyere oppløsning enn 512. Decimering er nå WP20. Hull som
   består ved band 2.0 er ekte modell-GROPER (reell geometri).
 - **`--remesh-res N` (2026-07-12, brukerens triangel-reduksjons-
   spørsmål)**: DC-gridet frikoblet fra pipeline-oppløsningen —
@@ -1156,10 +1109,22 @@ posisjonsbaserte og virker uendret på den nye topologien.
   det 2 ville @512). Varianter generert (@512-pipeline, f16-GEMM):
   res 256 → **238 381 V / 477 072 F** (15 MB GLB), res 128 →
   **56 877 V / 113 960 F** (3.6 MB); begge vanntette (0 randkanter),
-  unit-normaler. Full kontroll («nøyaktig X flater» + adaptiv
-  detaljbevaring) krever QEM-decimering — kilden ligger LOKALT i
-  mtlmesh/src/simplify.cu (582 linjer) + driver-løkken i
-  cumesh/cumesh.py::simplify; egen WP hvis res-skruen ikke holder.
+  unit-normaler. Adaptiv trekantreduksjon uavhengig av DC-gridet er nå
+  implementert som WP20 under.
+
+### WP20 — native QEM-decimering (FERDIG 2026-08-12)
+
+`trellis2_mojo/meshing/simplify.mojo` porter referansens
+quadric-error-kollaps til CPU-Mojo: normaliserte flateplan per verteks,
+boundary-pinnet midtpunkt, QEM + kantlengde + skinny-kostnad,
+normal-flippvern, deterministisk konfliktfri batch og samme terskeløkning
+som driveren. `--simplify-faces N` kjører etter `--remesh`, før
+teksturprøvetaking og normaler, og kan derfor redusere trekantmålet uten å
+senke DC-oppløsningen. En kollapsrunde kan lande litt under målet.
+
+`pixi run test-simplify`: remeshet kube 1000 V / 1992 F → 320 V / 632 F
+med mål 664; fortsatt vanntett, manifold og konsistent orientert, eksakt
+deterministisk ved omkjøring og bit-identisk no-op over gjeldende antall.
 
 ## FASE 2 / WP17 — 1024-kaskaden + sdpa-hodegruppering (FERDIG 2026-07-11)
 
@@ -1269,7 +1234,7 @@ kun 512):**
    (reell geometri — da er teksturen/modellen kilden, ikke meshen).
 2. **Finjustering av remeshen** (skruene står i WP18-seksjonen):
    band ned/opp, project_back opp for skarphet, DC på høyere
-   oppløsning enn 512, evt. decimering etterpå.
+   oppløsning enn 512 og `--simplify-faces N` for etterfølgende QEM.
 3. 1024-varianten av remeshen når 512 er godkjent (alt er
    oppløsningsagnostisk; kun kjøretid/minne å verifisere).
 

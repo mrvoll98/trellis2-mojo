@@ -6,9 +6,8 @@
 # "shape_slat_decoder", ...).
 #
 # The weights are bf16/fp16 on disk and ~5.3 GB per DiT in f32: load one
-# model at a time (see docs/08_HANDOVER.md). ckpt_io.py still exists, but
-# only as the torch-side reference for the parity tests (test-io,
-# test-real).
+# model at a time (see docs/08_HANDOVER.md). Checkpoints are loaded directly
+# from safetensors into the native StateDict.
 
 from trellis2_mojo.gpu.linear import GpuContext
 from trellis2_mojo.io.hf_cache import model_path, ckpt_base, load_config_json, snapshot_dir, read_file_bytes

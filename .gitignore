@@ -223,8 +223,8 @@ outputs/
 nohup.out
 *.pdf
 
-# Oppstrøms TRELLIS.2-fasit — ikke vendored; hentes med
-# scripts/fetch_upstream.sh (paritetstestene sammenligner mot den)
+# Eldre lokale referanse-checkouts er ikke del av Mojo-repoet.
 /trellis2/
 /o-voxel/
+# Lokalt eksportert konfigurasjonsspeil; produksjonen leser modellcachen.
 /configs/

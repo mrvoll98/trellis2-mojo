@@ -3,7 +3,7 @@
 #
 # Ported: input/out Linear, APE or RoPE positional embedding precomputed on
 # the voxel grid at build time, ModulatedTransformerCrossBlock stack,
-# parameter-free final layer_norm (torch F.layer_norm, default eps 1e-5).
+# parameter-free final layer_norm (default eps 1e-5).
 # Not ported: initialize_weights (weights always come from a state_dict),
 # convert_to/manual_cast (float32-only in v1), use_checkpoint (training).
 #
@@ -13,8 +13,6 @@
 # mirrors that: grid phases use the default (1.0, 10000.0) frequencies.
 
 from std.math import cos, sin, exp, log
-from std.python import PythonObject
-
 from trellis2_mojo.gpu.block import (
     gpu_block_phases,
     gpu_block_state_readback,
@@ -67,7 +65,7 @@ struct TimestepEmbedder(Copyable, Movable):
         var half = dim // 2
         var out_shape: List[Int] = [n, dim]
         var out = Tensor[F32](out_shape)
-        # freqs = exp(-log(max_period) * arange(half) / half), f32 as in torch
+        # freqs = exp(-log(max_period) * arange(half) / half), computed in f32
         var neg_log = -Float32(log(Float64(self.max_period)))
         for r in range(n):
             for j in range(half):
@@ -240,7 +238,7 @@ def sparse_structure_flow_from(
     qk_rms_norm: Bool,
     qk_rms_norm_cross: Bool,
 ) raises -> SparseStructureFlowModel:
-    """Build the model from a torch state_dict (loaders.mojo pattern)."""
+    """Build the model from a native StateDict (loaders.mojo pattern)."""
     var t_embedder = TimestepEmbedder(
         lin_from(sd, "t_embedder.mlp.0"), lin_from(sd, "t_embedder.mlp.2")
     )

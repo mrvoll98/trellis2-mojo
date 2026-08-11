@@ -7,9 +7,8 @@
 # (models/dinov3.mojo, weights via the WP12 safetensors reader).
 #
 # Input must be a PAM P7 file, RGBA with a real alpha channel (ADR 0007 —
-# the rembg/BiRefNet path is not supported). PNG -> PAM is a documented
-# one-liner in README_MOJO.md. cond_io.py remains only as the PIL/torch
-# reference for the parity tests (test-wp14, test-cond).
+# the rembg/BiRefNet path is not supported). PNG -> PAM conversion is
+# documented in README_MOJO.md.
 
 from trellis2_mojo.checkpoints import load_dinov3
 from trellis2_mojo.gpu.linear import GpuContext
@@ -34,5 +33,5 @@ struct ImageConditioner(Movable):
 
 
 def zeros_like_cond(cond: Tensor[F32]) raises -> Tensor[F32]:
-    """The pipeline's neg_cond: torch.zeros_like(cond)."""
+    """Create the pipeline's zero-valued negative conditioning tensor."""
     return Tensor[F32](cond.shape.copy())

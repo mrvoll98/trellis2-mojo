@@ -9,7 +9,7 @@
 # by SparseConv3d.forward (the sort only depends on the edges; every conv
 # on the same coords used to re-sort per call) — then ONE kernel computes
 # each output row by walking its edge range:
-# out[t, co0:co0+4] = sum_e x[src_e] . W^T[kidx_e][:, co0:co0+4]. Threads
+# out[t, co0:co0+4] = sum_e x[unsafe_offset=src_e] . W^T[kidx_e][:, co0:co0+4]. Threads
 # tile (row, co-lane-4); threads sharing a row broadcast the same x
 # scalars and adjacent co-lanes read coalesced weight lines. The weight is
 # uploaded ONCE per model load as [K, Ci, Co] (GpuSparseConv.try_build,
@@ -35,10 +35,10 @@
 # The expansion is bit-exact, so the f16 kernel is bit-identical to the
 # f32 kernel on the same values (step 14 precedent in gpu/linear.mojo).
 
-from std.algorithm import parallelize
+from max.algorithm import parallelize
 from std.gpu import thread_idx, block_idx
-from std.gpu.host import DeviceBuffer
-from std.memory import memcpy
+from max.gpu.host import DeviceBuffer
+from std.memory import unsafe_memcpy
 
 from trellis2_mojo.gpu.context import GpuContext
 from trellis2_mojo.gpu.linear import WFMT_F16, WFMT_F32, wfmt_scan
@@ -55,10 +55,10 @@ comptime GPU_CONV_MIN_PROXY = 1 << 31
 
 
 def sparse_conv_gather(
-    x: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    w: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    edges: UnsafePointer[Scalar[I32], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[F32], MutAnyOrigin],
+    x: Pointer[Scalar[F32], ImmutAnyOrigin],
+    w: Pointer[Scalar[F32], ImmutAnyOrigin],
+    edges: Pointer[Scalar[I32], ImmutAnyOrigin],
+    dst: Pointer[Scalar[F32], MutAnyOrigin],
 ):
     """WP11 step 9: TWO target rows x 8 co-lanes per thread. The rows'
     edge lists are merge-walked on kidx — ascending within a row because
@@ -69,21 +69,21 @@ def sparse_conv_gather(
     Per-row edge order and per-accumulator math are unchanged ->
     bit-identical to the single-row kernel. Dims live in the edges
     header (4 pointers leave no scalar binding); co % 64 == 0."""
-    var n = Int(edges[0])
-    var ci = Int(edges[1])
-    var co = Int(edges[2])
-    var et = Int(edges[3])
+    var n = Int(edges[unsafe_offset=0])
+    var ci = Int(edges[unsafe_offset=1])
+    var co = Int(edges[unsafe_offset=2])
+    var et = Int(edges[unsafe_offset=3])
     var row = (Int(block_idx.y) * 16 + Int(thread_idx.y)) * 2
     var co0 = (Int(block_idx.x) * 8 + Int(thread_idx.x)) * 8
     if row >= n:
         return
     var sbase = 5 + n
     var kbase = 5 + n + et
-    var a0 = Int(edges[4 + row])
-    var a1 = Int(edges[4 + row + 1])
+    var a0 = Int(edges[unsafe_offset=4 + row])
+    var a1 = Int(edges[unsafe_offset=4 + row + 1])
     var b1 = a1
     if row + 1 < n:
-        b1 = Int(edges[4 + row + 2])
+        b1 = Int(edges[unsafe_offset=4 + row + 2])
     var acc_a0 = SIMD[F32, 4](0)
     var acc_a1 = SIMD[F32, 4](0)
     var acc_b0 = SIMD[F32, 4](0)
@@ -94,20 +94,20 @@ def sparse_conv_gather(
     while ea < a1 or eb < b1:
         var ka = K_END
         if ea < a1:
-            ka = Int(edges[kbase + ea])
+            ka = Int(edges[unsafe_offset=kbase + ea])
         var kb = K_END
         if eb < b1:
-            kb = Int(edges[kbase + eb])
+            kb = Int(edges[unsafe_offset=kbase + eb])
         if ka == kb:
-            var xa = Int(edges[sbase + ea]) * ci
-            var xb = Int(edges[sbase + eb]) * ci
+            var xa = Int(edges[unsafe_offset=sbase + ea]) * ci
+            var xb = Int(edges[unsafe_offset=sbase + eb]) * ci
             var wb = ka * ci * co + co0
             for c in range(ci):
                 var wrow = wb + c * co
-                var wv0 = w.load[width=4](wrow)
-                var wv1 = w.load[width=4](wrow + 4)
-                var xsa = SIMD[F32, 4](x[xa + c])
-                var xsb = SIMD[F32, 4](x[xb + c])
+                var wv0 = w.unsafe_load[width=4](wrow)
+                var wv1 = w.unsafe_load[width=4](wrow + 4)
+                var xsa = SIMD[F32, 4](x[unsafe_offset=xa + c])
+                var xsb = SIMD[F32, 4](x[unsafe_offset=xb + c])
                 acc_a0 += xsa * wv0
                 acc_a1 += xsa * wv1
                 acc_b0 += xsb * wv0
@@ -115,35 +115,35 @@ def sparse_conv_gather(
             ea += 1
             eb += 1
         elif ka < kb:
-            var xa = Int(edges[sbase + ea]) * ci
+            var xa = Int(edges[unsafe_offset=sbase + ea]) * ci
             var wb = ka * ci * co + co0
             for c in range(ci):
                 var wrow = wb + c * co
-                var xsa = SIMD[F32, 4](x[xa + c])
-                acc_a0 += xsa * w.load[width=4](wrow)
-                acc_a1 += xsa * w.load[width=4](wrow + 4)
+                var xsa = SIMD[F32, 4](x[unsafe_offset=xa + c])
+                acc_a0 += xsa * w.unsafe_load[width=4](wrow)
+                acc_a1 += xsa * w.unsafe_load[width=4](wrow + 4)
             ea += 1
         else:
-            var xb = Int(edges[sbase + eb]) * ci
+            var xb = Int(edges[unsafe_offset=sbase + eb]) * ci
             var wb = kb * ci * co + co0
             for c in range(ci):
                 var wrow = wb + c * co
-                var xsb = SIMD[F32, 4](x[xb + c])
-                acc_b0 += xsb * w.load[width=4](wrow)
-                acc_b1 += xsb * w.load[width=4](wrow + 4)
+                var xsb = SIMD[F32, 4](x[unsafe_offset=xb + c])
+                acc_b0 += xsb * w.unsafe_load[width=4](wrow)
+                acc_b1 += xsb * w.unsafe_load[width=4](wrow + 4)
             eb += 1
-    dst.store(row * co + co0, acc_a0)
-    dst.store(row * co + co0 + 4, acc_a1)
+    dst.unsafe_store(row * co + co0, acc_a0)
+    dst.unsafe_store(row * co + co0 + 4, acc_a1)
     if row + 1 < n:
-        dst.store((row + 1) * co + co0, acc_b0)
-        dst.store((row + 1) * co + co0 + 4, acc_b1)
+        dst.unsafe_store((row + 1) * co + co0, acc_b0)
+        dst.unsafe_store((row + 1) * co + co0 + 4, acc_b1)
 
 
 def sparse_conv_gather_f16(
-    x: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    w: UnsafePointer[Scalar[U16], MutAnyOrigin],
-    edges: UnsafePointer[Scalar[I32], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[F32], MutAnyOrigin],
+    x: Pointer[Scalar[F32], ImmutAnyOrigin],
+    w: Pointer[Scalar[U16], ImmutAnyOrigin],
+    edges: Pointer[Scalar[I32], ImmutAnyOrigin],
+    dst: Pointer[Scalar[F32], MutAnyOrigin],
 ):
     """sparse_conv_gather with the weight stored as f16 bits (hardware
     cast -> f32 on each line load) — WP11 step 15. Only used when every
@@ -153,21 +153,21 @@ def sparse_conv_gather_f16(
     supported here: no sparse-conv checkpoint is bf16 (the DiTs have no
     sparse conv), and the 4-pointer marshalling limit leaves no scalar
     binding for a format flag — two kernels, host-side dispatch."""
-    var n = Int(edges[0])
-    var ci = Int(edges[1])
-    var co = Int(edges[2])
-    var et = Int(edges[3])
+    var n = Int(edges[unsafe_offset=0])
+    var ci = Int(edges[unsafe_offset=1])
+    var co = Int(edges[unsafe_offset=2])
+    var et = Int(edges[unsafe_offset=3])
     var row = (Int(block_idx.y) * 16 + Int(thread_idx.y)) * 2
     var co0 = (Int(block_idx.x) * 8 + Int(thread_idx.x)) * 8
     if row >= n:
         return
     var sbase = 5 + n
     var kbase = 5 + n + et
-    var a0 = Int(edges[4 + row])
-    var a1 = Int(edges[4 + row + 1])
+    var a0 = Int(edges[unsafe_offset=4 + row])
+    var a1 = Int(edges[unsafe_offset=4 + row + 1])
     var b1 = a1
     if row + 1 < n:
-        b1 = Int(edges[4 + row + 2])
+        b1 = Int(edges[unsafe_offset=4 + row + 2])
     var acc_a0 = SIMD[F32, 4](0)
     var acc_a1 = SIMD[F32, 4](0)
     var acc_b0 = SIMD[F32, 4](0)
@@ -178,20 +178,20 @@ def sparse_conv_gather_f16(
     while ea < a1 or eb < b1:
         var ka = K_END
         if ea < a1:
-            ka = Int(edges[kbase + ea])
+            ka = Int(edges[unsafe_offset=kbase + ea])
         var kb = K_END
         if eb < b1:
-            kb = Int(edges[kbase + eb])
+            kb = Int(edges[unsafe_offset=kbase + eb])
         if ka == kb:
-            var xa = Int(edges[sbase + ea]) * ci
-            var xb = Int(edges[sbase + eb]) * ci
+            var xa = Int(edges[unsafe_offset=sbase + ea]) * ci
+            var xb = Int(edges[unsafe_offset=sbase + eb]) * ci
             var wb = ka * ci * co + co0
             for c in range(ci):
                 var wrow = wb + c * co
-                var wv0 = SIMD[F16, 4](from_bits=w.load[width=4](wrow)).cast[F32]()
-                var wv1 = SIMD[F16, 4](from_bits=w.load[width=4](wrow + 4)).cast[F32]()
-                var xsa = SIMD[F32, 4](x[xa + c])
-                var xsb = SIMD[F32, 4](x[xb + c])
+                var wv0 = SIMD[F16, 4](from_bits=w.unsafe_load[width=4](wrow)).cast[F32]()
+                var wv1 = SIMD[F16, 4](from_bits=w.unsafe_load[width=4](wrow + 4)).cast[F32]()
+                var xsa = SIMD[F32, 4](x[unsafe_offset=xa + c])
+                var xsb = SIMD[F32, 4](x[unsafe_offset=xb + c])
                 acc_a0 += xsa * wv0
                 acc_a1 += xsa * wv1
                 acc_b0 += xsb * wv0
@@ -199,28 +199,28 @@ def sparse_conv_gather_f16(
             ea += 1
             eb += 1
         elif ka < kb:
-            var xa = Int(edges[sbase + ea]) * ci
+            var xa = Int(edges[unsafe_offset=sbase + ea]) * ci
             var wb = ka * ci * co + co0
             for c in range(ci):
                 var wrow = wb + c * co
-                var xsa = SIMD[F32, 4](x[xa + c])
-                acc_a0 += xsa * SIMD[F16, 4](from_bits=w.load[width=4](wrow)).cast[F32]()
-                acc_a1 += xsa * SIMD[F16, 4](from_bits=w.load[width=4](wrow + 4)).cast[F32]()
+                var xsa = SIMD[F32, 4](x[unsafe_offset=xa + c])
+                acc_a0 += xsa * SIMD[F16, 4](from_bits=w.unsafe_load[width=4](wrow)).cast[F32]()
+                acc_a1 += xsa * SIMD[F16, 4](from_bits=w.unsafe_load[width=4](wrow + 4)).cast[F32]()
             ea += 1
         else:
-            var xb = Int(edges[sbase + eb]) * ci
+            var xb = Int(edges[unsafe_offset=sbase + eb]) * ci
             var wb = kb * ci * co + co0
             for c in range(ci):
                 var wrow = wb + c * co
-                var xsb = SIMD[F32, 4](x[xb + c])
-                acc_b0 += xsb * SIMD[F16, 4](from_bits=w.load[width=4](wrow)).cast[F32]()
-                acc_b1 += xsb * SIMD[F16, 4](from_bits=w.load[width=4](wrow + 4)).cast[F32]()
+                var xsb = SIMD[F32, 4](x[unsafe_offset=xb + c])
+                acc_b0 += xsb * SIMD[F16, 4](from_bits=w.unsafe_load[width=4](wrow)).cast[F32]()
+                acc_b1 += xsb * SIMD[F16, 4](from_bits=w.unsafe_load[width=4](wrow + 4)).cast[F32]()
             eb += 1
-    dst.store(row * co + co0, acc_a0)
-    dst.store(row * co + co0 + 4, acc_a1)
+    dst.unsafe_store(row * co + co0, acc_a0)
+    dst.unsafe_store(row * co + co0 + 4, acc_a1)
     if row + 1 < n:
-        dst.store((row + 1) * co + co0, acc_b0)
-        dst.store((row + 1) * co + co0 + 4, acc_b1)
+        dst.unsafe_store((row + 1) * co + co0, acc_b0)
+        dst.unsafe_store((row + 1) * co + co0 + 4, acc_b1)
 
 
 struct GpuSparseConv(Copyable, Movable):
@@ -300,7 +300,7 @@ struct GpuSparseConv(Copyable, Movable):
                     for c in range(ci):
                         var dst = (k * ci + c) * co
                         for o in range(co):
-                            hp[dst + o] = wp[(o * ksize + k) * ci + c]
+                            hp[unsafe_offset=(dst + o)] = wp[unsafe_offset=(o * ksize + k) * ci + c]
 
                 parallelize[pack](ksize)
         else:
@@ -313,8 +313,8 @@ struct GpuSparseConv(Copyable, Movable):
                     for c in range(ci):
                         var dst = (k * ci + c) * co
                         for o in range(co):
-                            hp[dst + o] = (
-                                wp[(o * ksize + k) * ci + c]
+                            hp[unsafe_offset=(dst + o)] = (
+                                wp[unsafe_offset=(o * ksize + k) * ci + c]
                                 .cast[F16]()
                                 .to_bits[U16]()
                             )
@@ -323,7 +323,7 @@ struct GpuSparseConv(Copyable, Movable):
         var bias_host = List[Float32]()
         if has_bias:
             bias_host = List[Float32](length=co, fill=0)
-            memcpy(dest=bias_host.unsafe_ptr(), src=bias.data.unsafe_ptr(), count=co)
+            unsafe_memcpy(dest=bias_host.unsafe_ptr(), src=bias.data.unsafe_ptr(), count=co)
         return GpuSparseConv(
             g^, wfmt, wt^, wt16^, bias_host^, has_bias, co, ci, ksize
         )
@@ -356,10 +356,10 @@ struct GpuSparseConv(Copyable, Movable):
         var pack_len = 5 + n + 2 * e_total
         var epack = List[Int32](length=pack_len, fill=0)
         var ep = epack.unsafe_ptr()
-        ep[0] = Int32(n)
-        ep[1] = Int32(ci)
-        ep[2] = Int32(self.co)
-        ep[3] = Int32(e_total)
+        ep[unsafe_offset=0] = Int32(n)
+        ep[unsafe_offset=1] = Int32(ci)
+        ep[unsafe_offset=2] = Int32(self.co)
+        ep[unsafe_offset=3] = Int32(e_total)
         var rp = row_start.unsafe_ptr()
         var sp = src_s.unsafe_ptr()
         var kp = kidx_s.unsafe_ptr()
@@ -374,12 +374,12 @@ struct GpuSparseConv(Copyable, Movable):
             var r0 = i * rchunk
             var r1 = min(r0 + rchunk, n + 1)
             for r in range(r0, r1):
-                ep[4 + r] = Int32(rp[r])
+                ep[unsafe_offset=4 + r] = Int32(rp[unsafe_offset=r])
             var e0 = i * echunk
             var e1 = min(e0 + echunk, e_total)
             for e in range(e0, e1):
-                ep[sbase + e] = Int32(sp[e])
-                ep[kbase + e] = Int32(kp[e])
+                ep[unsafe_offset=sbase + e] = Int32(sp[unsafe_offset=e])
+                ep[unsafe_offset=kbase + e] = Int32(kp[unsafe_offset=e])
 
         parallelize[fill_pack](FCH)
 
@@ -407,7 +407,7 @@ struct GpuSparseConv(Copyable, Movable):
                 var lo = i * chunk
                 var cnt = min(chunk, total - lo)
                 if cnt > 0:
-                    memcpy(dest=ap + lo, src=xp + lo, count=cnt)
+                    unsafe_memcpy(dest=ap.unsafe_offset(lo), src=xp.unsafe_offset(lo), count=cnt)
 
             parallelize[copy_x](NCHUNK)
         with s[].e.value().map_to_host() as h:
@@ -419,21 +419,27 @@ struct GpuSparseConv(Copyable, Movable):
                 var lo = i * chunk
                 var cnt = min(chunk, pack_len - lo)
                 if cnt > 0:
-                    memcpy(dest=dp + lo, src=ep + lo, count=cnt)
+                    unsafe_memcpy(dest=dp.unsafe_offset(lo), src=ep.unsafe_offset(lo), count=cnt)
 
             parallelize[copy_e](NCHUNK)
 
         if self.wfmt == WFMT_F16:
             g.ctx.enqueue_function[sparse_conv_gather_f16](
-                s[].a.value().unsafe_ptr(), self.wt16.value().unsafe_ptr(),
-                s[].e.value().unsafe_ptr(), s[].c.value().unsafe_ptr(),
-                grid_dim=(self.co // 64, (n + 31) // 32), block_dim=(8, 16),
+                rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](s[].a.value().unsafe_ptr()),
+                rebind[Pointer[Scalar[U16], ImmutAnyOrigin]](self.wt16.value().unsafe_ptr()),
+                rebind[Pointer[Scalar[I32], ImmutAnyOrigin]](s[].e.value().unsafe_ptr()),
+                rebind[Pointer[Scalar[F32], MutAnyOrigin]](s[].c.value().unsafe_ptr()),
+                grid_dim=(self.co // 64, (n + 31) // 32),
+                block_dim=(8, 16),
             )
         else:
             g.ctx.enqueue_function[sparse_conv_gather](
-                s[].a.value().unsafe_ptr(), self.wt.value().unsafe_ptr(),
-                s[].e.value().unsafe_ptr(), s[].c.value().unsafe_ptr(),
-                grid_dim=(self.co // 64, (n + 31) // 32), block_dim=(8, 16),
+                rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](s[].a.value().unsafe_ptr()),
+                rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](self.wt.value().unsafe_ptr()),
+                rebind[Pointer[Scalar[I32], ImmutAnyOrigin]](s[].e.value().unsafe_ptr()),
+                rebind[Pointer[Scalar[F32], MutAnyOrigin]](s[].c.value().unsafe_ptr()),
+                grid_dim=(self.co // 64, (n + 31) // 32),
+                block_dim=(8, 16),
             )
         g.barrier()
 
@@ -459,13 +465,13 @@ struct GpuSparseConv(Copyable, Movable):
                         var base = r * co
                         var j = 0
                         while j < co_main:
-                            op.store(base + j, hp.load[width=W](base + j) + bp.load[width=W](j))
+                            op.unsafe_store(base + j, hp.unsafe_load[width=W](base + j) + bp.unsafe_load[width=W](j))
                             j += W
                         while j < co:
-                            op[base + j] = hp[base + j] + bp[j]
+                            op[unsafe_offset=base + j] = hp[unsafe_offset=base + j] + bp[unsafe_offset=j]
                             j += 1
                 else:
-                    memcpy(dest=op + r0 * co, src=hp + r0 * co, count=(r1 - r0) * co)
+                    unsafe_memcpy(dest=op.unsafe_offset(r0 * co), src=hp.unsafe_offset(r0 * co), count=(r1 - r0) * co)
 
             parallelize[copy_out](NCHUNK)
         return out^

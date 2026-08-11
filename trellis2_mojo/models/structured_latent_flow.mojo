@@ -11,8 +11,6 @@
 # convert_to / use_checkpoint. `resolution` is metadata the forward never
 # touches and is not stored.
 
-from std.python import PythonObject
-
 from trellis2_mojo.gpu.block import (
     gpu_block_phases,
     gpu_block_state_readback,
@@ -167,7 +165,7 @@ def slat_flow_from(
     qk_rms_norm: Bool,
     qk_rms_norm_cross: Bool,
 ) raises -> SLatFlowModel:
-    """Build the model from a torch state_dict (loaders.mojo pattern).
+    """Build the model from a native StateDict (loaders.mojo pattern).
     Works for ElasticSLatFlowModel checkpoints too — same keys."""
     var t_embedder = TimestepEmbedder(
         lin_from(sd, "t_embedder.mlp.0"), lin_from(sd, "t_embedder.mlp.2")

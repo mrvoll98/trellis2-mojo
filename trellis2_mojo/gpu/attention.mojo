@@ -3,13 +3,13 @@
 # traffic that motivated the CPU flash path in pass 8) never leaves the
 # GPU:
 #
-#   qk:      scores[h] = (q[h] * scale) @ k[h]^T      (gemm_z, batched
+#   qk:      scores[unsafe_offset=h] = (q[unsafe_offset=h] * scale) @ k[h]^T      (gemm_z, batched
 #            over heads via grid z; the scale is pre-baked into q during
 #            packing so the kernel needs no float scalar)
 #   softmax: row max over the VALID columns, p = exp(x - m) in place,
 #            0 for padded columns, row sums to a side buffer (the 1/sum
 #            is NOT applied on the GPU...)
-#   av:      out[h] = p[h] @ v[h]                     (gemm_z again)
+#   av:      out[h] = p[unsafe_offset=h] @ v[h]                     (gemm_z again)
 #   readback (...it is fused into the parallel readback pass on the CPU
 #            together with the [T,H,D] re-interleave).
 #
@@ -44,12 +44,13 @@
 # creation (gpu/linear.mojo) and falls back to CPU if the second cycle
 # misbehaves.
 
-from std.algorithm import parallelize
-from std.gpu import thread_idx, block_idx, block_dim, barrier
-from std.gpu.host import DeviceBuffer
-from std.gpu.memory import AddressSpace
+from max.algorithm import parallelize
+from std.gpu import thread_idx, block_idx, block_dim
+from max.gpu import barrier
+from max.gpu.host import DeviceBuffer
+from std.memory import AddressSpace
 from std.math import exp, sqrt
-from std.memory import stack_allocation, memcpy
+from std.memory import stack_allocation, unsafe_memcpy
 
 from trellis2_mojo.gpu.context import GpuContext
 from trellis2_mojo.gpu.linear import GpuLinear
@@ -74,14 +75,20 @@ comptime GPU_SDPA_MAX_SCORES = 1 << 28
 
 
 def gemm_z(
-    a: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    c: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    n: Int, kdim: Int, sa: Int, sb: Int, sc: Int,
+    a: Pointer[Scalar[F32], ImmutAnyOrigin],
+    b: Pointer[Scalar[F32], ImmutAnyOrigin],
+    c: Pointer[Scalar[F32], MutAnyOrigin],
+    n_dev: Int32, kdim_dev: Int32, sa_dev: Int32, sb_dev: Int32, sc_dev: Int32,
 ):
     """C[z] = A[z] @ B[z] for z in grid.z: the tiled GEMM from
     gpu/linear.mojo with per-z base offsets (sa/sb/sc element strides).
     Requires m % 64 == n % 64 == kdim % 16 == 0."""
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
+    var sa = Int(sa_dev)
+    var sb = Int(sb_dev)
+    var sc = Int(sc_dev)
+
     var As = stack_allocation[
         BM * BK, Scalar[F32], address_space = AddressSpace.SHARED
     ]()
@@ -104,32 +111,32 @@ def gemm_z(
         var ar = ia // BK
         var ac = ia % BK
         var a_src = z * sa + (Int(block_idx.y) * BM + ar) * kdim + kb * BK + ac
-        As.store(ia, a.load[width=4](a_src))
+        As.unsafe_store(ia, a.unsafe_load[width=4](a_src))
         var ib = tid * 4
         var br = ib // BN
         var bc = ib % BN
         var b_src = z * sb + (kb * BK + br) * n + Int(block_idx.x) * BN + bc
-        Bs.store(ib, b.load[width=4](b_src))
+        Bs.unsafe_store(ib, b.unsafe_load[width=4](b_src))
         barrier()
         for kk in range(BK):
-            var bv = Bs.load[width=TN](kk * BN + tx * TN)
-            acc0 += SIMD[F32, TN](As[(ty * TM + 0) * BK + kk]) * bv
-            acc1 += SIMD[F32, TN](As[(ty * TM + 1) * BK + kk]) * bv
-            acc2 += SIMD[F32, TN](As[(ty * TM + 2) * BK + kk]) * bv
-            acc3 += SIMD[F32, TN](As[(ty * TM + 3) * BK + kk]) * bv
+            var bv = Bs.unsafe_load[width=TN](kk * BN + tx * TN)
+            acc0 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 0) * BK + kk]) * bv
+            acc1 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 1) * BK + kk]) * bv
+            acc2 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 2) * BK + kk]) * bv
+            acc3 += SIMD[F32, TN](As[unsafe_offset=(ty * TM + 3) * BK + kk]) * bv
         barrier()
     var cb = z * sc
-    c.store(cb + (row0 + 0) * n + col0, acc0)
-    c.store(cb + (row0 + 1) * n + col0, acc1)
-    c.store(cb + (row0 + 2) * n + col0, acc2)
-    c.store(cb + (row0 + 3) * n + col0, acc3)
+    c.unsafe_store(cb + (row0 + 0) * n + col0, acc0)
+    c.unsafe_store(cb + (row0 + 1) * n + col0, acc1)
+    c.unsafe_store(cb + (row0 + 2) * n + col0, acc2)
+    c.unsafe_store(cb + (row0 + 3) * n + col0, acc3)
 
 
 def gemm_z_f16sh(
-    a: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    b: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    c: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    n: Int, kdim: Int, sa: Int, sb: Int, sc: Int,
+    a: Pointer[Scalar[F32], ImmutAnyOrigin],
+    b: Pointer[Scalar[F32], ImmutAnyOrigin],
+    c: Pointer[Scalar[F32], MutAnyOrigin],
+    n_dev: Int32, kdim_dev: Int32, sa_dev: Int32, sb_dev: Int32, sc_dev: Int32,
 ):
     """WP19 trinn 2: gemm_z med BEGGE shared-flisene i f16 (kildene er
     f32-aktiveringer — q/k/v/probs — og castes på fyllet; matte og
@@ -137,6 +144,12 @@ def gemm_z_f16sh(
     +32-40 % målt på flis-geometrien (shared-båndbredde-bundet).
     Numerikk: ~5e-4 rel per element inn i qk-logitene — opt-in bak
     TRELLIS2_GPU_F16 sammen med vekt-GEMM-ene."""
+    var n = Int(n_dev)
+    var kdim = Int(kdim_dev)
+    var sa = Int(sa_dev)
+    var sb = Int(sb_dev)
+    var sc = Int(sc_dev)
+
     var As = stack_allocation[
         BM * BK, Scalar[DType.float16], address_space = AddressSpace.SHARED
     ]()
@@ -159,62 +172,66 @@ def gemm_z_f16sh(
         var ar = ia // BK
         var ac = ia % BK
         var a_src = z * sa + (Int(block_idx.y) * BM + ar) * kdim + kb * BK + ac
-        As.store(ia, a.load[width=4](a_src).cast[DType.float16]())
+        As.unsafe_store(ia, a.unsafe_load[width=4](a_src).cast[DType.float16]())
         var ib = tid * 4
         var br = ib // BN
         var bc = ib % BN
         var b_src = z * sb + (kb * BK + br) * n + Int(block_idx.x) * BN + bc
-        Bs.store(ib, b.load[width=4](b_src).cast[DType.float16]())
+        Bs.unsafe_store(ib, b.unsafe_load[width=4](b_src).cast[DType.float16]())
         barrier()
         for kk in range(BK):
-            var bv = Bs.load[width=TN](kk * BN + tx * TN).cast[F32]()
+            var bv = Bs.unsafe_load[width=TN](kk * BN + tx * TN).cast[F32]()
             acc0 += SIMD[F32, TN](
-                As[(ty * TM + 0) * BK + kk].cast[F32]()
+                As[unsafe_offset=(ty * TM + 0) * BK + kk].cast[F32]()
             ) * bv
             acc1 += SIMD[F32, TN](
-                As[(ty * TM + 1) * BK + kk].cast[F32]()
+                As[unsafe_offset=(ty * TM + 1) * BK + kk].cast[F32]()
             ) * bv
             acc2 += SIMD[F32, TN](
-                As[(ty * TM + 2) * BK + kk].cast[F32]()
+                As[unsafe_offset=(ty * TM + 2) * BK + kk].cast[F32]()
             ) * bv
             acc3 += SIMD[F32, TN](
-                As[(ty * TM + 3) * BK + kk].cast[F32]()
+                As[unsafe_offset=(ty * TM + 3) * BK + kk].cast[F32]()
             ) * bv
         barrier()
     var cb = z * sc
-    c.store(cb + (row0 + 0) * n + col0, acc0)
-    c.store(cb + (row0 + 1) * n + col0, acc1)
-    c.store(cb + (row0 + 2) * n + col0, acc2)
-    c.store(cb + (row0 + 3) * n + col0, acc3)
+    c.unsafe_store(cb + (row0 + 0) * n + col0, acc0)
+    c.unsafe_store(cb + (row0 + 1) * n + col0, acc1)
+    c.unsafe_store(cb + (row0 + 2) * n + col0, acc2)
+    c.unsafe_store(cb + (row0 + 3) * n + col0, acc3)
 
 
 def softmax_rows_z(
-    scores: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    sums: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    rows: Int, n_valid: Int, n_pad: Int,
+    scores: Pointer[Scalar[F32], MutAnyOrigin],
+    sums: Pointer[Scalar[F32], MutAnyOrigin],
+    rows_dev: Int32, n_valid_dev: Int32, n_pad_dev: Int32,
 ):
-    """Per row of scores[z] [rows, n_pad]: m = max over the first n_valid
+    """Per row of scores[unsafe_offset=z] [rows, n_pad]: m = max over the first n_valid
     columns, p = exp(x - m) in place (0 in the padded tail), row sum ->
     sums[z * rows + r]. The 1/sum is fused into the CPU readback. One
     thread per row."""
+    var rows = Int(rows_dev)
+    var n_valid = Int(n_valid_dev)
+    var n_pad = Int(n_pad_dev)
+
     var z = Int(block_idx.z)
     var r = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
     if r >= rows:
         return
     var base = z * rows * n_pad + r * n_pad
-    var m = scores[base]
+    var m = scores[unsafe_offset=base]
     for j in range(1, n_valid):
-        var x = scores[base + j]
+        var x = scores[unsafe_offset=base + j]
         if x > m:
             m = x
     var s: Float32 = 0
     for j in range(n_valid):
-        var p = exp(scores[base + j] - m)
-        scores[base + j] = p
+        var p = exp(scores[unsafe_offset=base + j] - m)
+        scores[unsafe_offset=base + j] = p
         s += p
     for j in range(n_valid, n_pad):
-        scores[base + j] = 0
-    sums[z * rows + r] = s
+        scores[unsafe_offset=base + j] = 0
+    sums[unsafe_offset=z * rows + r] = s
 
 
 def gpu_sdpa_wants(l: Int, lkv: Int, head_dim: Int, heads: Int) -> Bool:
@@ -246,12 +263,12 @@ def _sdpa_sc_need(h: Int, mp: Int, lp: Int) -> Int:
 
 def _enqueue_sdpa_groups(
     g: GpuContext,
-    qh: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    kt: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    vh: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    sc: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    su: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    ob: UnsafePointer[Scalar[F32], MutAnyOrigin],
+    qh: Pointer[Scalar[F32], _],
+    kt: Pointer[Scalar[F32], _],
+    vh: Pointer[Scalar[F32], _],
+    sc: Pointer[Scalar[F32], _],
+    su: Pointer[Scalar[F32], _],
+    ob: Pointer[Scalar[F32], _],
     h: Int, mp: Int, lp: Int, lkv: Int, d: Int,
 ) raises:
     """WP17: the qk -> masked-softmax -> av composition enqueued in HEAD
@@ -269,39 +286,45 @@ def _enqueue_sdpa_groups(
         hg = h
     if hg < 1:
         hg = 1
+
     var z0 = 0
     while z0 < h:
         var zn = min(hg, h - z0)
-        # qk: scores[z] [mp, lp] = qh[z0+z] [mp, d] @ kt[z0+z] [d, lp]
+        var qh_a = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](qh.unsafe_offset(z0 * mp * d))
+        var kt_b = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](kt.unsafe_offset(z0 * d * lp))
+        var sc_c = rebind[Pointer[Scalar[F32], MutAnyOrigin]](sc)
         if g.f16:
             g.ctx.enqueue_function[gemm_z_f16sh](
-                qh + z0 * mp * d, kt + z0 * d * lp, sc,
-                lp, d, mp * d, d * lp, mp * lp,
+                qh_a, kt_b, sc_c,
+                Int32(lp), Int32(d), Int32(mp * d), Int32(d * lp), Int32(mp * lp),
                 grid_dim=(lp // BN, mp // BM, zn), block_dim=(16, 16),
             )
         else:
             g.ctx.enqueue_function[gemm_z](
-                qh + z0 * mp * d, kt + z0 * d * lp, sc,
-                lp, d, mp * d, d * lp, mp * lp,
+                qh_a, kt_b, sc_c,
+                Int32(lp), Int32(d), Int32(mp * d), Int32(d * lp), Int32(mp * lp),
                 grid_dim=(lp // BN, mp // BM, zn), block_dim=(16, 16),
             )
-        # masked softmax rows + row sums (pad q rows compute a harmless
-        # uniform softmax and are never read back)
+        var sc_s = rebind[Pointer[Scalar[F32], MutAnyOrigin]](sc)
+        var su_s = rebind[Pointer[Scalar[F32], MutAnyOrigin]](su.unsafe_offset(z0 * mp))
         g.ctx.enqueue_function[softmax_rows_z](
-            sc, su + z0 * mp, mp, lkv, lp,
+            sc_s, su_s,
+            Int32(mp), Int32(lkv), Int32(lp),
             grid_dim=((mp + 255) // 256, 1, zn), block_dim=(256, 1, 1),
         )
-        # av: ob[z0+z] [mp, d] = probs[z] [mp, lp] @ vh[z0+z] [lp, d]
+        var sc_a = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](sc)
+        var vh_b = rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](vh.unsafe_offset(z0 * lp * d))
+        var ob_c = rebind[Pointer[Scalar[F32], MutAnyOrigin]](ob.unsafe_offset(z0 * mp * d))
         if g.f16:
             g.ctx.enqueue_function[gemm_z_f16sh](
-                sc, vh + z0 * lp * d, ob + z0 * mp * d,
-                d, lp, mp * lp, lp * d, mp * d,
+                sc_a, vh_b, ob_c,
+                Int32(d), Int32(lp), Int32(mp * lp), Int32(lp * d), Int32(mp * d),
                 grid_dim=(d // BN, mp // BM, zn), block_dim=(16, 16),
             )
         else:
             g.ctx.enqueue_function[gemm_z](
-                sc, vh + z0 * lp * d, ob + z0 * mp * d,
-                d, lp, mp * lp, lp * d, mp * d,
+                sc_a, vh_b, ob_c,
+                Int32(d), Int32(lp), Int32(mp * lp), Int32(lp * d), Int32(mp * d),
                 grid_dim=(d // BN, mp // BM, zn), block_dim=(16, 16),
             )
         z0 += zn
@@ -408,25 +431,25 @@ def _sdpa_core(
                         var src = (t * h + head) * d
                         var dst = qb + t * d
                         for e in range(d):
-                            qhp[dst + e] = qp[src + e] * scale
+                            qhp[unsafe_offset=(dst + e)] = qp[unsafe_offset=src + e] * scale
                     for i in range(l * d, mp * d):
-                        qhp[qb + i] = 0
+                        qhp[unsafe_offset=qb + i] = 0
                     var kb = head * d * lp
                     for t in range(lkv):
                         var src = (t * h + head) * d
                         for e in range(d):
-                            ktp[kb + e * lp + t] = kp[src + e]
+                            ktp[unsafe_offset=kb + e * lp + t] = kp[unsafe_offset=src + e]
                     for t in range(lkv, lp):
                         for e in range(d):
-                            ktp[kb + e * lp + t] = 0
+                            ktp[unsafe_offset=kb + e * lp + t] = 0
                     var vb = head * lp * d
                     for t in range(lkv):
                         var src = (t * h + head) * d
                         var dst = vb + t * d
                         for e in range(d):
-                            vhp[dst + e] = vp[src + e]
+                            vhp[unsafe_offset=(dst + e)] = vp[unsafe_offset=src + e]
                     for i in range(lkv * d, lp * d):
-                        vhp[vb + i] = 0
+                        vhp[unsafe_offset=vb + i] = 0
 
                 parallelize[pack_head](h)
 
@@ -444,7 +467,7 @@ def _sdpa_core(
     # from WC memory would be one transaction each)
     var sums = List[Float32](length=h * mp, fill=0)
     with s[].su.value().map_to_host() as hs:
-        memcpy(dest=sums.unsafe_ptr(), src=hs.unsafe_ptr(), count=h * mp)
+        unsafe_memcpy(dest=sums.unsafe_ptr(), src=hs.unsafe_ptr(), count=h * mp)
 
     # readback: re-interleave [H, mp, D] -> [T, H, D] with the denominator
     # fused in, skipping the pad rows. Work items are (head, t-range) so
@@ -464,15 +487,15 @@ def _sdpa_core(
             var t0 = (item % NT) * chunk
             var t1 = min(t0 + chunk, l)
             for t in range(t0, t1):
-                var inv = Float32(1.0) / sup[head * mp + t]
+                var inv = Float32(1.0) / sup[unsafe_offset=head * mp + t]
                 var src = (head * mp + t) * d
                 var dst = (t * h + head) * d
                 var e = 0
                 while e + W <= d:
-                    op.store(dst + e, obp.load[width=W](src + e) * inv)
+                    op.unsafe_store((dst + e), obp.unsafe_load[width=W]((src + e)) * inv)
                     e += W
                 while e < d:
-                    op[dst + e] = obp[src + e] * inv
+                    op[unsafe_offset=(dst + e)] = obp[unsafe_offset=src + e] * inv
                     e += 1
 
         parallelize[copy_out](h * NT)
@@ -482,10 +505,10 @@ def _sdpa_core(
 
 
 def bias_rms_rope_qkv(
-    qkv: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    consts: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    phases: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    rows: Int, h: Int, d: Int, use_rms: Int, use_rope: Int,
+    qkv: Pointer[Scalar[F32], MutAnyOrigin],
+    consts: Pointer[Scalar[F32], ImmutAnyOrigin],
+    phases: Pointer[Scalar[F32], ImmutAnyOrigin],
+    rows_dev: Int32, h_dev: Int32, d_dev: Int32, use_rms_dev: Int32, use_rope_dev: Int32,
 ):
     """In place on the qkv GEMM output [rows, 3, H, D] (valid rows only —
     pad rows are zeroed by the pack kernels): add the qkv bias, then
@@ -494,6 +517,12 @@ def bias_rms_rope_qkv(
     (ONE buffer keeps the kernel at 3 pointers — marshalling law). One
     thread per (row, head); per-element formulas match the CPU
     MultiHeadRMSNorm / _rotate exactly, only accumulation order differs."""
+    var rows = Int(rows_dev)
+    var h = Int(h_dev)
+    var d = Int(d_dev)
+    var use_rms = Int(use_rms_dev)
+    var use_rope = Int(use_rope_dev)
+
     var i = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
     if i >= rows * h:
         return
@@ -505,7 +534,7 @@ def bias_rms_rope_qkv(
         var off = row * stride + p * hd + head * d
         var boff = p * hd + head * d
         for e in range(d):
-            qkv[off + e] = qkv[off + e] + consts[boff + e]
+            qkv[unsafe_offset=off + e] = qkv[unsafe_offset=off + e] + consts[unsafe_offset=boff + e]
     if use_rms == 1:
         var sc = sqrt(Float32(d))
         for p in range(2):
@@ -513,36 +542,42 @@ def bias_rms_rope_qkv(
             var goff = 3 * hd + p * hd + head * d
             var acc: Float32 = 0
             for e in range(d):
-                var v = qkv[off + e]
+                var v = qkv[unsafe_offset=off + e]
                 acc += v * v
             var norm = sqrt(acc)
             if norm < 1e-12:
                 norm = 1e-12
             for e in range(d):
-                qkv[off + e] = qkv[off + e] / norm * consts[goff + e] * sc
+                qkv[unsafe_offset=off + e] = qkv[unsafe_offset=off + e] / norm * consts[unsafe_offset=goff + e] * sc
     if use_rope == 1:
         var half = d // 2
         var pbase = row * half * 2
         for p in range(2):
             var off = row * stride + p * hd + head * d
             for pr in range(half):
-                var c = phases[pbase + 2 * pr]
-                var s = phases[pbase + 2 * pr + 1]
-                var re = qkv[off + 2 * pr]
-                var im = qkv[off + 2 * pr + 1]
-                qkv[off + 2 * pr] = re * c - im * s
-                qkv[off + 2 * pr + 1] = re * s + im * c
+                var c = phases[unsafe_offset=pbase + 2 * pr]
+                var s = phases[unsafe_offset=pbase + 2 * pr + 1]
+                var re = qkv[unsafe_offset=off + 2 * pr]
+                var im = qkv[unsafe_offset=off + 2 * pr + 1]
+                qkv[unsafe_offset=off + 2 * pr] = re * c - im * s
+                qkv[unsafe_offset=off + 2 * pr + 1] = re * s + im * c
 
 
 def pack_q_z(
-    qkv: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    qh: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    l: Int, h: Int, d: Int, mp: Int, stride: Int,
+    qkv: Pointer[Scalar[F32], ImmutAnyOrigin],
+    qh: Pointer[Scalar[F32], MutAnyOrigin],
+    l_dev: Int32, h_dev: Int32, d_dev: Int32, mp_dev: Int32, stride_dev: Int32,
 ):
     """q rows at `stride` elements apart (3*H*D for the fused qkv buffer,
     H*D for the cross q buffer) -> qh [H, mp, D] with the sdpa scale
     baked in (recomputed from d — no float scalars); pad rows zeroed so
     their softmax stays finite. grid z = head, thread = row."""
+    var l = Int(l_dev)
+    var h = Int(h_dev)
+    var d = Int(d_dev)
+    var mp = Int(mp_dev)
+    var stride = Int(stride_dev)
+
     var z = Int(block_idx.z)
     var t = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
     if t >= mp:
@@ -552,21 +587,26 @@ def pack_q_z(
         var scale = Float32(1.0) / sqrt(Float32(d))
         var src = t * stride + z * d
         for e in range(d):
-            qh[dst + e] = qkv[src + e] * scale
+            qh[unsafe_offset=(dst + e)] = qkv[unsafe_offset=src + e] * scale
     else:
         for e in range(d):
-            qh[dst + e] = 0
+            qh[unsafe_offset=(dst + e)] = 0
 
 
 def bias_rms_q(
-    q: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    consts: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    rows: Int, h: Int, d: Int, use_rms: Int,
+    q: Pointer[Scalar[F32], MutAnyOrigin],
+    consts: Pointer[Scalar[F32], ImmutAnyOrigin],
+    rows_dev: Int32, h_dev: Int32, d_dev: Int32, use_rms_dev: Int32,
 ):
     """Cross-chain epilogue: in place on the q GEMM output [rows, H, D]
     (valid rows only), add the q bias and rms-normalize with gamma_q.
     consts = [HD bias][HD gamma_q]. One thread per (row, head); formulas
     match bias_rms_rope_qkv's q part."""
+    var rows = Int(rows_dev)
+    var h = Int(h_dev)
+    var d = Int(d_dev)
+    var use_rms = Int(use_rms_dev)
+
     var i = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
     if i >= rows * h:
         return
@@ -576,30 +616,35 @@ def bias_rms_q(
     var off = row * hd + head * d
     var boff = head * d
     for e in range(d):
-        q[off + e] = q[off + e] + consts[boff + e]
+        q[unsafe_offset=off + e] = q[unsafe_offset=off + e] + consts[unsafe_offset=boff + e]
     if use_rms == 1:
         var sc = sqrt(Float32(d))
         var goff = hd + head * d
         var acc: Float32 = 0
         for e in range(d):
-            var v = q[off + e]
+            var v = q[unsafe_offset=off + e]
             acc += v * v
         var norm = sqrt(acc)
         if norm < 1e-12:
             norm = 1e-12
         for e in range(d):
-            q[off + e] = q[off + e] / norm * consts[goff + e] * sc
+            q[unsafe_offset=off + e] = q[unsafe_offset=off + e] / norm * consts[unsafe_offset=goff + e] * sc
 
 
 def pack_kv_z(
-    qkv: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    kt: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    vh: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    l: Int, h: Int, d: Int, lp: Int,
+    qkv: Pointer[Scalar[F32], ImmutAnyOrigin],
+    kt: Pointer[Scalar[F32], MutAnyOrigin],
+    vh: Pointer[Scalar[F32], MutAnyOrigin],
+    l_dev: Int32, h_dev: Int32, d_dev: Int32, lp_dev: Int32,
 ):
     """qkv parts 1/2 -> kt [H, D, lp] (transposed) + vh [H, lp, D]; pad
     columns/rows zeroed (v pads MUST be zero: the av GEMM multiplies them
     by the zeroed probs and 0*NaN would poison the output)."""
+    var l = Int(l_dev)
+    var h = Int(h_dev)
+    var d = Int(d_dev)
+    var lp = Int(lp_dev)
+
     var z = Int(block_idx.z)
     var t = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
     if t >= lp:
@@ -611,32 +656,36 @@ def pack_kv_z(
         var ksrc = t * 3 * hd + hd + z * d
         var vsrc = t * 3 * hd + 2 * hd + z * d
         for e in range(d):
-            kt[kb + e * lp + t] = qkv[ksrc + e]
-            vh[vdst + e] = qkv[vsrc + e]
+            kt[unsafe_offset=kb + e * lp + t] = qkv[unsafe_offset=ksrc + e]
+            vh[unsafe_offset=vdst + e] = qkv[unsafe_offset=vsrc + e]
     else:
         for e in range(d):
-            kt[kb + e * lp + t] = 0
-            vh[vdst + e] = 0
+            kt[unsafe_offset=kb + e * lp + t] = 0
+            vh[unsafe_offset=vdst + e] = 0
 
 
 def unpack_o_z(
-    ob: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    su: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    dst: UnsafePointer[Scalar[F32], MutAnyOrigin],
-    mp: Int, h: Int, d: Int,
+    ob: Pointer[Scalar[F32], ImmutAnyOrigin],
+    su: Pointer[Scalar[F32], ImmutAnyOrigin],
+    dst: Pointer[Scalar[F32], MutAnyOrigin],
+    mp_dev: Int32, h_dev: Int32, d_dev: Int32,
 ):
     """ob [H, mp, D] -> dst [mp, H*D] with the softmax 1/sum fused. ALL
     mp rows are written (pad rows are finite: zero q rows give a uniform
     softmax) so the out-GEMM reads no stale scratch."""
+    var mp = Int(mp_dev)
+    var h = Int(h_dev)
+    var d = Int(d_dev)
+
     var z = Int(block_idx.z)
     var t = Int(block_idx.x) * Int(block_dim.x) + Int(thread_idx.x)
     if t >= mp:
         return
-    var inv = Float32(1.0) / su[z * mp + t]
+    var inv = Float32(1.0) / su[unsafe_offset=z * mp + t]
     var src = (z * mp + t) * d
     var doff = t * h * d + z * d
     for e in range(d):
-        dst[doff + e] = ob[src + e] * inv
+        dst[unsafe_offset=doff + e] = ob[unsafe_offset=src + e] * inv
 
 
 struct GpuAttnChain(Copyable, Movable):
@@ -695,16 +744,16 @@ struct GpuAttnChain(Copyable, Movable):
         with consts.map_to_host() as hm:
             var p = hm.unsafe_ptr()
             if qkv.value().has_bias:
-                memcpy(dest=p, src=qkv.value().bias_host.unsafe_ptr(), count=3 * hd)
+                unsafe_memcpy(dest=p, src=qkv.value().bias_host.unsafe_ptr(), count=3 * hd)
             else:
                 for i in range(3 * hd):
-                    p[i] = 0
+                    p[unsafe_offset=i] = 0
             if use_rms:
-                memcpy(dest=p + 3 * hd, src=gamma_q.data.unsafe_ptr(), count=hd)
-                memcpy(dest=p + 4 * hd, src=gamma_k.data.unsafe_ptr(), count=hd)
+                unsafe_memcpy(dest=p.unsafe_offset(3 * hd), src=gamma_q.data.unsafe_ptr(), count=hd)
+                unsafe_memcpy(dest=p.unsafe_offset(4 * hd), src=gamma_k.data.unsafe_ptr(), count=hd)
             else:
                 for i in range(2 * hd):
-                    p[3 * hd + i] = 1
+                    p[unsafe_offset=3 * hd + i] = 1
         return GpuAttnChain(g^, consts^, h, d, use_rms)
 
     @staticmethod
@@ -732,15 +781,15 @@ struct GpuAttnChain(Copyable, Movable):
         with consts.map_to_host() as hm:
             var p = hm.unsafe_ptr()
             if q_lin.value().has_bias:
-                memcpy(dest=p, src=q_lin.value().bias_host.unsafe_ptr(), count=hd)
+                unsafe_memcpy(dest=p, src=q_lin.value().bias_host.unsafe_ptr(), count=hd)
             else:
                 for i in range(hd):
-                    p[i] = 0
+                    p[unsafe_offset=i] = 0
             if use_rms:
-                memcpy(dest=p + hd, src=gamma_q.data.unsafe_ptr(), count=hd)
+                unsafe_memcpy(dest=p.unsafe_offset(hd), src=gamma_q.data.unsafe_ptr(), count=hd)
             else:
                 for i in range(hd):
-                    p[hd + i] = 1
+                    p[unsafe_offset=hd + i] = 1
         return GpuAttnChain(g^, consts^, h, d, use_rms, is_cross=True)
 
     def wants(self, rows: Int, qkv: GpuLinear) -> Bool:
@@ -768,7 +817,7 @@ def _upload_phases(g: GpuContext, phases: Tensor[F32], rows: Int, d: Int) raises
         t[].ph = g.ctx.enqueue_create_buffer[F32](need)
         t[].ph_cap = need
     with t[].ph.value().map_to_host() as hp:
-        memcpy(dest=hp.unsafe_ptr(), src=phases.data.unsafe_ptr(), count=need)
+        unsafe_memcpy(dest=hp.unsafe_ptr(), src=phases.data.unsafe_ptr(), count=need)
     return t[].ph.value()
 
 
@@ -839,7 +888,7 @@ def _attn_chain_core(
             var lo = i * chunk
             var n = min(chunk, total - lo)
             if n > 0:
-                memcpy(dest=ap + lo, src=xp + lo, count=n)
+                unsafe_memcpy(dest=ap.unsafe_offset(lo), src=xp.unsafe_offset(lo), count=n)
 
         parallelize[copy_in](NCHUNK)
 
@@ -871,13 +920,13 @@ def _attn_chain_core(
                     var base = r * co
                     var j = 0
                     while j < co_main:
-                        op.store(base + j, hp.load[width=W](base + j) + bp.load[width=W](j))
+                        op.unsafe_store(base + j, hp.unsafe_load[width=W](base + j) + bp.unsafe_load[width=W](j))
                         j += W
                     while j < co:
-                        op[base + j] = hp[base + j] + bp[j]
+                        op[unsafe_offset=base + j] = hp[unsafe_offset=base + j] + bp[unsafe_offset=j]
                         j += 1
             else:
-                memcpy(dest=op + r0 * co, src=hp + r0 * co, count=(r1 - r0) * co)
+                unsafe_memcpy(dest=op.unsafe_offset(r0 * co), src=hp.unsafe_offset(r0 * co), count=(r1 - r0) * co)
 
         parallelize[copy_out](NCHUNK)
     return out^
@@ -937,19 +986,29 @@ def _attn_chain_enqueue(
     )
     # bias + rms + rope on the valid rows, in place
     g.ctx.enqueue_function[bias_rms_rope_qkv](
-        s[].c.value().unsafe_ptr(), chain.consts.unsafe_ptr(), ph_buf.unsafe_ptr(),
-        rows, h, d, 1 if chain.use_rms else 0, 1 if use_rope else 0,
-        grid_dim=((rows * h + 255) // 256,), block_dim=(256,),
+        rebind[Pointer[Scalar[F32], MutAnyOrigin]](s[].c.value().unsafe_ptr()),
+        rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](chain.consts.unsafe_ptr()),
+        rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](ph_buf.unsafe_ptr()),
+        Int32(rows),
+        Int32(h),
+        Int32(d),
+        Int32(1 if chain.use_rms else 0),
+        Int32(1 if use_rope else 0),
+        grid_dim=((rows * h + 255) // 256,),
+        block_dim=(256,),
     )
     # head-major pack (q scaled, kv transposed/zero-padded)
     g.ctx.enqueue_function[pack_q_z](
-        s[].c.value().unsafe_ptr(), t[].qh.value().unsafe_ptr(),
-        rows, h, d, mp, 3 * hd,
+        rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](s[].c.value().unsafe_ptr()),
+        rebind[Pointer[Scalar[F32], MutAnyOrigin]](t[].qh.value().unsafe_ptr()),
+        Int32(rows), Int32(h), Int32(d), Int32(mp), Int32(3 * hd),
         grid_dim=((mp + 255) // 256, 1, h), block_dim=(256, 1, 1),
     )
     g.ctx.enqueue_function[pack_kv_z](
-        s[].c.value().unsafe_ptr(), t[].kt.value().unsafe_ptr(), t[].vh.value().unsafe_ptr(),
-        rows, h, d, mp,
+        rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](s[].c.value().unsafe_ptr()),
+        rebind[Pointer[Scalar[F32], MutAnyOrigin]](t[].kt.value().unsafe_ptr()),
+        rebind[Pointer[Scalar[F32], MutAnyOrigin]](t[].vh.value().unsafe_ptr()),
+        Int32(rows), Int32(h), Int32(d), Int32(mp),
         grid_dim=((mp + 255) // 256, 1, h), block_dim=(256, 1, 1),
     )
     # the SDPA composition (identical to _sdpa_core's), in head groups
@@ -963,8 +1022,10 @@ def _attn_chain_enqueue(
     # re-interleave into the C scratch (free: the packs consumed it and
     # the queue is in-order), then the out-GEMM into out_buf
     g.ctx.enqueue_function[unpack_o_z](
-        t[].ob.value().unsafe_ptr(), t[].su.value().unsafe_ptr(), s[].c.value().unsafe_ptr(),
-        mp, h, d,
+        rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](t[].ob.value().unsafe_ptr()),
+        rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](t[].su.value().unsafe_ptr()),
+        rebind[Pointer[Scalar[F32], MutAnyOrigin]](s[].c.value().unsafe_ptr()),
+        Int32(mp), Int32(h), Int32(d),
         grid_dim=((mp + 255) // 256, 1, h), block_dim=(256, 1, 1),
     )
     out_lin.enqueue_gemm(
@@ -1002,18 +1063,18 @@ def _cross_pack_kv(
                 for tt in range(lkv):
                     var src = (tt * h + head) * d
                     for e in range(d):
-                        ktp[kb + e * lp + tt] = kp[src + e]
+                        ktp[unsafe_offset=kb + e * lp + tt] = kp[unsafe_offset=src + e]
                 for tt in range(lkv, lp):
                     for e in range(d):
-                        ktp[kb + e * lp + tt] = 0
+                        ktp[unsafe_offset=kb + e * lp + tt] = 0
                 var vb = head * lp * d
                 for tt in range(lkv):
                     var src = (tt * h + head) * d
                     var dst = vb + tt * d
                     for e in range(d):
-                        vhp[dst + e] = vp[src + e]
+                        vhp[unsafe_offset=(dst + e)] = vp[unsafe_offset=src + e]
                 for i in range(lkv * d, lp * d):
-                    vhp[vb + i] = 0
+                    vhp[unsafe_offset=vb + i] = 0
 
             parallelize[pack_head](h)
 
@@ -1072,7 +1133,7 @@ def gpu_attn_cross_chain(
             var lo = i * chunk
             var n = min(chunk, total - lo)
             if n > 0:
-                memcpy(dest=ap + lo, src=xp + lo, count=n)
+                unsafe_memcpy(dest=ap.unsafe_offset(lo), src=xp.unsafe_offset(lo), count=n)
 
         parallelize[copy_in](NCHUNK)
 
@@ -1102,13 +1163,13 @@ def gpu_attn_cross_chain(
                     var base = r * co
                     var j = 0
                     while j < co_main:
-                        op.store(base + j, hp.load[width=W](base + j) + bp.load[width=W](j))
+                        op.unsafe_store(base + j, hp.unsafe_load[width=W](base + j) + bp.unsafe_load[width=W](j))
                         j += W
                     while j < co:
-                        op[base + j] = hp[base + j] + bp[j]
+                        op[unsafe_offset=base + j] = hp[unsafe_offset=base + j] + bp[unsafe_offset=j]
                         j += 1
             else:
-                memcpy(dest=op + r0 * co, src=hp + r0 * co, count=(r1 - r0) * co)
+                unsafe_memcpy(dest=op.unsafe_offset(r0 * co), src=hp.unsafe_offset(r0 * co), count=(r1 - r0) * co)
 
         parallelize[copy_out](NCHUNK)
     return out^
@@ -1160,13 +1221,15 @@ def _cross_chain_enqueue(
     )
     # bias + q-rms on the valid rows, in place
     g.ctx.enqueue_function[bias_rms_q](
-        s[].c.value().unsafe_ptr(), chain.consts.unsafe_ptr(),
-        rows, h, d, 1 if chain.use_rms else 0,
+        rebind[Pointer[Scalar[F32], MutAnyOrigin]](s[].c.value().unsafe_ptr()),
+        rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](chain.consts.unsafe_ptr()),
+        Int32(rows), Int32(h), Int32(d), Int32(1 if chain.use_rms else 0),
         grid_dim=((rows * h + 255) // 256,), block_dim=(256,),
     )
     g.ctx.enqueue_function[pack_q_z](
-        s[].c.value().unsafe_ptr(), t[].qh.value().unsafe_ptr(),
-        rows, h, d, mp, hd,
+        rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](s[].c.value().unsafe_ptr()),
+        rebind[Pointer[Scalar[F32], MutAnyOrigin]](t[].qh.value().unsafe_ptr()),
+        Int32(rows), Int32(h), Int32(d), Int32(mp), Int32(hd),
         grid_dim=((mp + 255) // 256, 1, h), block_dim=(256, 1, 1),
     )
     # sdpa composition against the pre-packed kv, in head groups (WP17)
@@ -1178,8 +1241,10 @@ def _cross_chain_enqueue(
         h, mp, lp, lkv, d,
     )
     g.ctx.enqueue_function[unpack_o_z](
-        t[].ob.value().unsafe_ptr(), t[].su.value().unsafe_ptr(), s[].c.value().unsafe_ptr(),
-        mp, h, d,
+        rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](t[].ob.value().unsafe_ptr()),
+        rebind[Pointer[Scalar[F32], ImmutAnyOrigin]](t[].su.value().unsafe_ptr()),
+        rebind[Pointer[Scalar[F32], MutAnyOrigin]](s[].c.value().unsafe_ptr()),
+        Int32(mp), Int32(h), Int32(d),
         grid_dim=((mp + 255) // 256, 1, h), block_dim=(256, 1, 1),
     )
     out_lin.enqueue_gemm(

@@ -3,6 +3,12 @@
 Status per kildefil. Oppdateres løpende — dette er sannhetskilden for fremdrift.
 Arbeidspakker (WP) og akseptkriterier er definert i [06_MASTER_PLAN.md](06_MASTER_PLAN.md).
 
+**Oppdatering 2026-08-11:** Selve inferensrepoet er nå native Mojo uten
+Python-objektbro eller eksternt tensor-framework. Radene under bevarer
+fil-for-fil-historikken fra paritetsfasen; README og
+[PURE_MOJO_RUNTIME.md](PURE_MOJO_RUNTIME.md) er sannhetskilden for gjeldende
+avhengigheter og kommandoer.
+
 **Statuskoder:** `⬜ ikke startet` · `📄 mapping-doc skrevet` · `🔄 pågår` · `✅ portert + paritet grønn` · `🐍 forblir Python (bevisst)` · `🚫 utenfor omfang v1`
 
 ## Kjerne: modules/sparse
@@ -91,11 +97,11 @@ Arbeidspakker (WP) og akseptkriterier er definert i [06_MASTER_PLAN.md](06_MASTE
 |---|---|---|
 | Golden outputs m/ per-steg-dumps | WP0 | ⬜ (krever CUDA-maskin) |
 | `baselines/ENVIRONMENT.md` | WP0 | ⬜ |
-| pixi.toml + Mojo-versjonlås | WP1 | ✅ Mojo 1.0.0b2 (`modular >=26.4`), pytorch 2.12, numpy — `pixi run mojo` |
-| ADR 0006: interop-mekanisme | WP1 | ✅ Begge retninger verifisert: Mojo embedder Python (`Python.import_module`, brukt av paritetsfuzzen), og Mojo-sampler driver torch-modell (`PyVelocityModel` + `trellis2_mojo/interop.mojo` tensor-bro). Formelt ADR-dokument gjenstår å skrive. |
-| `tests/parity/`-harness | WP1 | ✅ `pixi run test-sparse` (enhetstester), `pixi run test-parity` (fuzz mot torch-original) |
+| pixi.toml + Mojo-versjonlås | WP1 | ✅ Stabil Mojo 1.0.0 + minimal MAX Core 26.5.0 for parallel/Metal; native `test-all` — `pixi run mojo` |
+| ADR 0006: interop-mekanisme | WP1 | ✅ Historisk validert og deretter fjernet; produksjonsstien har ingen objektbro. |
+| `tests/parity/`-harness | WP1 | ✅ Ekstern referanseharness pensjonert; native regresjonstester beholdt. |
 | Manglende mapping-docs fra 00_INDEX (mange referert, få skrevet) | løpende | 🔄 |
-| Benchmark-harness Mojo vs torch (`pixi run bench`, `benchmarks/`) + resultater i `docs/benchmarks/RESULTS.md` | WP10 | ✅ attention/conv/blokk/sampler-løkke; torch default + 1 tråd |
+| Historisk benchmark-harness + resultater i `docs/benchmarks/RESULTS.md` | WP10 | ✅ Referansedriver fjernet; Mojo-mikrobenchmarks beholdt. |
 | Ytelse pass 1: SIMD i `varlen_sdpa` (qk-dot, av-axpy, løkkeombytting) og `linear` | WP10 | ✅ paritet fortsatt grønn; tall i RESULTS.md |
 | Ytelse pass 2: parallelize i `varlen_sdpa`/`linear`/`conv3d` (+ SIMD i conv), flops-terskler for seriell fallback | WP10 | ✅ bit-identisk med seriell sti; slår 1-tråds torch på alle kernel-caser |
 | Ytelse pass 3: q-tiling i `varlen_sdpa` (L1-gjenbruk av k/v-rader) + SIMD i LayerNorm32/activation/modulate | WP10 | ✅ sampler 65→57 ms, mod-block 10.3→9.3 ms |
@@ -124,6 +130,7 @@ Arbeidspakker (WP) og akseptkriterier er definert i [06_MASTER_PLAN.md](06_MASTE
 | FASE 2 / WP16 REVISJON: sykel-vandringen ERSTATTET med cumesh-formuleringen — CuMesh-kilden er publisert (github.com/JeffreyXiang/CuMesh): fill_holes er KOMPONENT-basert (union-find over randkanter, avvis kun komponenter m/grad-1-vertekser, fyll hele komponenten m/én centroid = snitt av kant-midtpunkter + (b,a,c)-trekant per kant) | Fase 2 | ✅ UTFØRT (2026-07-11): vandringen lot 2 204 FLETTEDE komponenter (13 654 randkanter) stå åpne på 1024-goldenen — brukeren så dem; komponent-fyllingen tar alle. test-wp16 oppdatert (delt-verteks = ÉN komponent). LÆRDOM: les kilden FØR intensjonsport — «hull = ren sykel» var feil |
 | FASE 2 / WP16 v6: `remove_small_connected_components(1e-5)` — cumesh-kilden ligger LOKALT (`trellis-mac/deps/mtlmesh/src/{clean_up,connectivity}.cu`): flate-komponenter over MANGFOLDIGE kanter (nøyaktig 2 flater; delt verteks/non-manifold kant kobler ikke), arealsum per komponent, fjern < min_area + kompakter ureferererte vertekser; runner-sekvens fill → repair → remove_small → fill → unify (oppstrøms to_glb minus simplify) | Fase 2 | ✅ UTFØRT (2026-07-12): test-wp16 utvidet (verteks-deling kobler ikke, kant-par merger m/arealsum, remapping, idempotens). Golden: 13 897 ark / 60 472 flater fjernet @512 (GLB 648k→552k V), 34 597 / 167 997 @1024 (→2.13M V); OBJ/npz byte-identiske; GLB-sjekker grønne, 0 komponenter < 1e-5 igjen. A/B (`tests/checks/ab_mac_vs_mojo.py`): trellis-mac-meshen har SAMME fragmentklasse (11 040 < 1e-5) — modellens natur |
 | FASE 2 / WP16 v7: `sew_boundary_seams` — sprekk-sying (EGEN semantikk, brukerens valg 2026-07-12 etter at visuell A/B viste samme prikker i oppstrøms teksturerte GLB): sveis rand-vertekser med BIT-identiske posisjoner (ingen epsilon; 63-bits spatial hash av lav-21 mantissebits + eksakt-likhets-kjede; deterministisk), dropp degenererte flater, kompakter; sekvens fill → repair → remove_small → fill → sew → fill → unify | Fase 2 | ✅ UTFØRT (2026-07-12): test-wp16 + 5 caser (tvilling-rand, 1-ulp urørt, sliver, determinisme, vanntett no-op). Golden: 24 798/30 230 vertekser sveiset @512/@1024, randkanter i ferdig GLB −72/−73 % (59 794→16 456 / 72 243→19 543), 541/498 komponenter lukket post-weld; OBJ/npz byte-identiske; sjekker grønne. Rester: non-manifold ved sveisekryss (unify hopper over; ALDRI repair etter sew), 145 sub-terskel-sløyfer @512 i blandede komponenter |
+| FASE 2 / WP20: native QEM-decimering etter remesh (`meshing/simplify.mojo`, `--simplify-faces N`) | Fase 2 | ✅ UTFØRT (2026-08-12): deterministiske konfliktfrie kollapsrunder med QEM/kantlengde/skinny-kostnad, boundary-pinning og normal-flippvern. Native kubetest reduserer 1992→632 F uten å åpne eller gjøre meshen non-manifold. |
 | FASE 2 / WP18: remesh-grenen — `meshing/remesh.mojo`, port av mtlmesh `remesh_narrow_band_dc` + `simple_dual_contour.cu` (LEST lokalt): offset-flaten UDF−eps=0 (eps=1 voxel) via narrow-band dual contouring, triangel-grid CSR (R/4, 3³-søk, r_max 4 voxler) i stedet for cuBVH, AABB-stempling i stedet for oktre (samme voxelsett), project_back=0.9; NIENDE oppstrøms-bug: split-align-indekseringen sammenligner tri 1 med seg selv → split 1 alltid (vi porterer intensjonen); runner-flagg `--remesh` erstatter cleanup-kjeden i GLB-stien | Fase 2 | ✅ UTFØRT (2026-07-12, @512): test-wp18 i test-all (→ 18 filer): kube → vanntett dobbelt-skall + positivt fortegnsvolum, punktert kube → FORTSATT vanntett, offset ~eps, projeksjon <0.16·eps, determinisme. Golden @512 (`shoe_512_remesh.glb`): 975 708 V / 1 952 036 F, **0 randkanter**, 305 non-manifold DC-kryss, COLOR_0 2.4e-7, 256 s (remesh ~10 s); OBJ/npz byte-identiske. Skruer: band/project_back/oppløsning |
 | FASE 2 / WP17: 1024-kaskaden + hodegruppert sdpa — runner-flagg `--pipeline 1024` (oppstrøms '1024_cascade': cond@512+1024, LR-slat 512-DiT → subdivisjons-upsample → 64³-dedupe (`run_cascade_stage`) → HR-slat 1024-DiT → tex 1024-DiT → alt @1024³); SJETTE Metal-felle probet (kjerneskriv forbi 4 GiB byte-offset i én binding tapes stille) → `_enqueue_sdpa_groups`: sdpa-komposisjonen i hodegrupper mot scores-scratch ≤ 2^28, gate per-hode | Fase 2 | ✅ UTFØRT (2026-07-11): hg==h identisk med gammel sti (alle paritetstall uendret); ny 15+1-gruppers-case (self 4160² H16) ≤ 2e-7. HR-slat 698 s (CPU) → 120 s (5.8x). Golden @1024: 836 s = 13.9 min, 2 058 563 voxels = 4.00x 512-goldenen, 2.06M V / 4.16M F, GLB-sjekk grønn (COLOR_0 3e-7), peak RSS 16.6 GB |
 

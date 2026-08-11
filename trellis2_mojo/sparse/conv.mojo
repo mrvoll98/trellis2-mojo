@@ -7,7 +7,7 @@
 # neighbor map is cached in the spatial cache keyed by kernel and dilation.
 # SparseInverseConv3d is unimplemented in the original 'none' backend too.
 
-from std.algorithm import parallelize
+from max.algorithm import parallelize
 
 from trellis2_mojo.gpu.conv import GpuSparseConv
 from trellis2_mojo.sparse.tensor import Tensor
@@ -138,7 +138,7 @@ struct SparseConv3d(Copyable, Movable):
                     var p = cur[t]
                     src_s[p] = src[e]
                     kidx_s[p] = kidx[e]
-                    cur[t] = p + 1
+                    cur[t] = (p + 1)
                 x.register_spatial_cache(csr_name, CacheValue.from_ints(
                     [row_start.copy(), src_s.copy(), kidx_s.copy()]
                 ))
@@ -172,20 +172,20 @@ struct SparseConv3d(Copyable, Movable):
             var o_lo = wk * O_CHUNK
             var o_hi = min(o_lo + O_CHUNK, co)
             for e in range(n_edges):
-                var x_base = srcp[e] * ci
-                var t_base = tgtp[e] * co
+                var x_base = srcp[unsafe_offset=e] * ci
+                var t_base = tgtp[unsafe_offset=e] * co
                 for o in range(o_lo, o_hi):
-                    var w_base = (o * ksize + kidxp[e]) * ci
+                    var w_base = (o * ksize + kidxp[unsafe_offset=e]) * ci
                     var accv = SIMD[F32, W](0)
                     var i = 0
                     while i + W <= ci:
-                        accv += xp.load[width=W](x_base + i) * wp.load[width=W](w_base + i)
+                        accv += xp.unsafe_load[width=W](x_base + i) * wp.unsafe_load[width=W](w_base + i)
                         i += W
                     var acc = accv.reduce_add()
                     while i < ci:
-                        acc += xp[x_base + i] * wp[w_base + i]
+                        acc += xp[unsafe_offset=x_base + i] * wp[unsafe_offset=w_base + i]
                         i += 1
-                    op[t_base + o] += acc
+                    op[unsafe_offset=t_base + o] += acc
 
         if n_work == 1 or n_edges * co * ci < 1 << 16:
             for wk in range(n_work):

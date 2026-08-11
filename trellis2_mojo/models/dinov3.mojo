@@ -23,7 +23,7 @@
 #   - mask_token is pre-training only (bool_masked_pos=None) — not loaded.
 #
 # Weights load through the WP12 pure-Mojo safetensors reader (f32 on disk);
-# the parity test feeds torch state_dicts through the same StateDict facade.
+# production checkpoints load through the same native StateDict facade.
 
 from std.math import cos, sin
 

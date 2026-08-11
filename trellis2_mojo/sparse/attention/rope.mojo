@@ -5,10 +5,10 @@
 # then x viewed as complex pairs is multiplied by the phases. Here phases
 # are stored as an interleaved (cos, sin) tensor [N, head_dim/2, 2] and the
 # complex multiply is written out in real arithmetic. Frequencies are
-# computed in float32 to mirror torch's dtype behavior. Phases are cached
+# computed in float32 to preserve the source model's dtype behavior. Phases are cached
 # in the spatial cache under the same name scheme as the original.
 
-from std.algorithm import parallelize
+from max.algorithm import parallelize
 from std.math import cos, sin
 
 from trellis2_mojo.sparse.tensor import Tensor
@@ -102,19 +102,19 @@ struct SparseRotaryPositionEmbedder(Copyable, Movable):
                     var base = (r * h + head) * d
                     var i = 0
                     while i + W <= d:
-                        var v = fp.load[width=W](base + i).deinterleave()
-                        var ph = pp.load[width=W](pbase + i).deinterleave()
+                        var v = fp.unsafe_load[width=W](base + i).deinterleave()
+                        var ph = pp.unsafe_load[width=W](pbase + i).deinterleave()
                         var ore = v[0] * ph[0] - v[1] * ph[1]
                         var oim = v[0] * ph[1] + v[1] * ph[0]
-                        op.store(base + i, ore.interleave(oim))
+                        op.unsafe_store(base + i, ore.interleave(oim))
                         i += W
                     while i < d:
-                        var re = fp[base + i]
-                        var im = fp[base + i + 1]
-                        var c = pp[pbase + i]
-                        var s = pp[pbase + i + 1]
-                        op[base + i] = re * c - im * s
-                        op[base + i + 1] = re * s + im * c
+                        var re = fp[unsafe_offset=base + i]
+                        var im = fp[unsafe_offset=base + i + 1]
+                        var c = pp[unsafe_offset=pbase + i]
+                        var s = pp[unsafe_offset=pbase + i + 1]
+                        op[unsafe_offset=base + i] = re * c - im * s
+                        op[unsafe_offset=base + i + 1] = re * s + im * c
                         i += 2
 
         var n_chunks = (n_rows + RC - 1) // RC

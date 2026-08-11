@@ -1,6 +1,5 @@
-# Builders that assemble Mojo modules from a StateDict — either a torch
-# state_dict (parity tests; @implicit conversion from PythonObject) or the
-# pure-Mojo safetensors dict (runner path, WP12).
+# Builders that assemble Mojo modules from the pure-Mojo safetensors
+# StateDict (runner path, WP12).
 #
 # Key naming follows the originals, e.g. "attn.to_qkv.weight",
 # "mlp.mlp.0.weight", "adaLN_modulation.1.bias".

@@ -5,7 +5,7 @@
 #
 # Phases are stored as an interleaved (cos, sin) tensor [L, head_dim/2, 2],
 # same layout as sparse/attention/rope.mojo; slots beyond dim * freq_dim are
-# unit phases (torch.polar(1, 0) padding in the original).
+# unit phases (polar(1, 0) padding in the source model).
 
 from std.math import cos, sin
 

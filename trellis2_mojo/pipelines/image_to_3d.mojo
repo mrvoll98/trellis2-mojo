@@ -107,7 +107,7 @@ struct SlatFlowVelocity(Copyable, Movable, VelocityModel):
 
 def occupancy_to_coords(occ: Tensor[F32], resolution: Int) raises -> IntMatrix:
     """decoder(z) > 0 -> (optional max-pool downscale) -> argwhere coords
-    (n, x, y, z), lexicographic like torch.argwhere on [N, 1, X, Y, Z]."""
+    (n, x, y, z), in lexicographic order over [N, 1, X, Y, Z]."""
     if len(occ.shape) != 5 or occ.shape[1] != 1:
         raise Error("occupancy_to_coords: expected [N, 1, X, Y, Z]")
     var n = occ.shape[0]
@@ -161,8 +161,8 @@ def sample_sparse_structure(
     guidance_rescale: Float64 = 0.0,
 ) raises -> IntMatrix:
     """Pipeline.sample_sparse_structure: latent sampling + decode +
-    thresholding to active voxel coords. Noise comes from the caller (the
-    runner draws it in torch so trajectories are reproducible). The real
+    thresholding to active voxel coords. Noise comes from the caller's native
+    Mojo RNG so trajectories are reproducible. The real
     pipeline.json runs guidance_rescale 0.7 here (dense std semantics)."""
     var z = sampler.sample_cfg_interval(
         velocity, noise, steps, rescale_t, guidance_strength, interval_lo, interval_hi,
@@ -221,7 +221,7 @@ def cascade_coords(
 ) raises -> Tuple[IntMatrix, Int]:
     """The quantize/unique/token-budget loop of sample_shape_slat_cascade:
     quant = int((xyz + 0.5) / lr_resolution * (hr_resolution / 16)), rows
-    deduped and sorted like torch.unique(dim=0); hr_resolution drops by 128
+    deduplicated and sorted lexicographically; hr_resolution drops by 128
     until the token count fits (or the 1024 floor is hit).
     -> (coords, hr_resolution)."""
     var n = hr_coords.rows

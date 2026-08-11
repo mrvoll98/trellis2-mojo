@@ -171,7 +171,7 @@ struct Tensor[dtype: DType](Copyable, Movable):
         self.data[row * self.row_size() + offset] = v
 
     def reshape_rows(self, tail: List[Int]) raises -> Self:
-        """torch's feats.reshape(feats.shape[0], *tail): keep dim 0, reshape rest."""
+        """Keep dimension 0 and reshape the remaining dimensions."""
         var new_shape = List[Int]()
         new_shape.append(self.rows())
         for s in tail:
@@ -284,7 +284,7 @@ struct Tensor[dtype: DType](Copyable, Movable):
         return out^
 
     def slice_dim(self, dim: Int, start: Int, stop: Int) raises -> Self:
-        """Slice [start, stop) along dim (torch x[..., start:stop, ...])."""
+        """Slice [start, stop) along one dimension."""
         var new_shape = self.shape.copy()
         new_shape[dim] = stop - start
         var out = Self(new_shape)
@@ -302,7 +302,7 @@ struct Tensor[dtype: DType](Copyable, Movable):
 
     @staticmethod
     def stack_dim1(ts: List[Self]) raises -> Self:
-        """Stack n tensors [R, *tail] into [R, n, *tail] (torch.stack dim=1)."""
+        """Stack n tensors [R, *tail] into [R, n, *tail]."""
         if len(ts) == 0:
             raise Error("Tensor.stack_dim1: empty input")
         var rows = ts[0].rows()
@@ -332,7 +332,7 @@ struct Tensor[dtype: DType](Copyable, Movable):
         return out^
 
     def unbind(self, dim: Int) raises -> List[Self]:
-        """Split along dim (>= 1), removing it — torch.unbind."""
+        """Split along dim (>= 1), removing it."""
         if dim < 1 or dim >= len(self.shape):
             raise Error("Tensor.unbind: dim out of range (must be >= 1)")
         var n = self.shape[dim]
@@ -416,10 +416,10 @@ def _copy_span[dt: DType](mut dst: List[Scalar[dt]], d0: Int, src: List[Scalar[d
     var sp = src.unsafe_ptr()
     var i = 0
     while i + _EW <= n:
-        dp.store(d0 + i, sp.load[width=_EW](s0 + i))
+        dp.unsafe_store(d0 + i, sp.unsafe_load[width=_EW](s0 + i))
         i += _EW
     while i < n:
-        dp[d0 + i] = sp[s0 + i]
+        dp[unsafe_offset=d0 + i] = sp[unsafe_offset=s0 + i]
         i += 1
 
 
@@ -436,31 +436,31 @@ def _op_span[dt: DType](
     var i = 0
     if op == OP_ADD:
         while i + _EW <= n:
-            dp.store(d0 + i, ap.load[width=_EW](a0 + i) + bp.load[width=_EW](b0 + i))
+            dp.unsafe_store(d0 + i, ap.unsafe_load[width=_EW](a0 + i) + bp.unsafe_load[width=_EW](b0 + i))
             i += _EW
         while i < n:
-            dp[d0 + i] = ap[a0 + i] + bp[b0 + i]
+            dp[unsafe_offset=d0 + i] = ap[unsafe_offset=a0 + i] + bp[unsafe_offset=b0 + i]
             i += 1
     elif op == OP_SUB:
         while i + _EW <= n:
-            dp.store(d0 + i, ap.load[width=_EW](a0 + i) - bp.load[width=_EW](b0 + i))
+            dp.unsafe_store(d0 + i, ap.unsafe_load[width=_EW](a0 + i) - bp.unsafe_load[width=_EW](b0 + i))
             i += _EW
         while i < n:
-            dp[d0 + i] = ap[a0 + i] - bp[b0 + i]
+            dp[unsafe_offset=d0 + i] = ap[unsafe_offset=a0 + i] - bp[unsafe_offset=b0 + i]
             i += 1
     elif op == OP_MUL:
         while i + _EW <= n:
-            dp.store(d0 + i, ap.load[width=_EW](a0 + i) * bp.load[width=_EW](b0 + i))
+            dp.unsafe_store(d0 + i, ap.unsafe_load[width=_EW](a0 + i) * bp.unsafe_load[width=_EW](b0 + i))
             i += _EW
         while i < n:
-            dp[d0 + i] = ap[a0 + i] * bp[b0 + i]
+            dp[unsafe_offset=d0 + i] = ap[unsafe_offset=a0 + i] * bp[unsafe_offset=b0 + i]
             i += 1
     elif op == OP_DIV:
         while i + _EW <= n:
-            dp.store(d0 + i, ap.load[width=_EW](a0 + i) / bp.load[width=_EW](b0 + i))
+            dp.unsafe_store(d0 + i, ap.unsafe_load[width=_EW](a0 + i) / bp.unsafe_load[width=_EW](b0 + i))
             i += _EW
         while i < n:
-            dp[d0 + i] = ap[a0 + i] / bp[b0 + i]
+            dp[unsafe_offset=d0 + i] = ap[unsafe_offset=a0 + i] / bp[unsafe_offset=b0 + i]
             i += 1
     else:
         raise Error("unknown op code")
@@ -478,47 +478,47 @@ def _opscalar_span[dt: DType](
     var i = 0
     if op == OP_ADD:
         while i + _EW <= n:
-            dp.store(d0 + i, ap.load[width=_EW](a0 + i) + bv)
+            dp.unsafe_store(d0 + i, ap.unsafe_load[width=_EW](a0 + i) + bv)
             i += _EW
         while i < n:
-            dp[d0 + i] = ap[a0 + i] + b
+            dp[unsafe_offset=d0 + i] = ap[unsafe_offset=a0 + i] + b
             i += 1
     elif op == OP_MUL:
         while i + _EW <= n:
-            dp.store(d0 + i, ap.load[width=_EW](a0 + i) * bv)
+            dp.unsafe_store(d0 + i, ap.unsafe_load[width=_EW](a0 + i) * bv)
             i += _EW
         while i < n:
-            dp[d0 + i] = ap[a0 + i] * b
+            dp[unsafe_offset=d0 + i] = ap[unsafe_offset=a0 + i] * b
             i += 1
     elif op == OP_SUB:
         if reverse:
             while i + _EW <= n:
-                dp.store(d0 + i, bv - ap.load[width=_EW](a0 + i))
+                dp.unsafe_store(d0 + i, bv - ap.unsafe_load[width=_EW](a0 + i))
                 i += _EW
             while i < n:
-                dp[d0 + i] = b - ap[a0 + i]
+                dp[unsafe_offset=d0 + i] = b - ap[unsafe_offset=a0 + i]
                 i += 1
         else:
             while i + _EW <= n:
-                dp.store(d0 + i, ap.load[width=_EW](a0 + i) - bv)
+                dp.unsafe_store(d0 + i, ap.unsafe_load[width=_EW](a0 + i) - bv)
                 i += _EW
             while i < n:
-                dp[d0 + i] = ap[a0 + i] - b
+                dp[unsafe_offset=d0 + i] = ap[unsafe_offset=a0 + i] - b
                 i += 1
     elif op == OP_DIV:
         if reverse:
             while i + _EW <= n:
-                dp.store(d0 + i, bv / ap.load[width=_EW](a0 + i))
+                dp.unsafe_store(d0 + i, bv / ap.unsafe_load[width=_EW](a0 + i))
                 i += _EW
             while i < n:
-                dp[d0 + i] = b / ap[a0 + i]
+                dp[unsafe_offset=d0 + i] = b / ap[unsafe_offset=a0 + i]
                 i += 1
         else:
             while i + _EW <= n:
-                dp.store(d0 + i, ap.load[width=_EW](a0 + i) / bv)
+                dp.unsafe_store(d0 + i, ap.unsafe_load[width=_EW](a0 + i) / bv)
                 i += _EW
             while i < n:
-                dp[d0 + i] = ap[a0 + i] / b
+                dp[unsafe_offset=d0 + i] = ap[unsafe_offset=a0 + i] / b
                 i += 1
     else:
         raise Error("unknown op code")

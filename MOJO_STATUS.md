@@ -1,20 +1,23 @@
 # Mojo Port Status
 
-**Phase:** THE PURE-MOJO TRACK (ADR 0007) IS COMPLETE. WP2–WP10 + WP9
-part 3 + WP12 (pure-Mojo loading) + WP13 (pure-Mojo DINOv3) + WP14
-(pure-Mojo image IO/preprocess) are all done: the whole image->3D
-pipeline runs in Mojo from PAM file to OBJ/npz, parity-verified
-component by component, and Mojo beats torch on every benchmark case
-against both default-thread and single-thread torch. The only Python
-left in the runner is torch.randn (kept deliberately for noise-stream
-compatibility with the original); Python/torch otherwise remain only in
-tests/parity and benchmarks. Remaining tracks are optional/external:
-WP0 golden outputs (needs a CUDA box), WP11 fp16/GPU (MAPPED 2026-07-09:
-Metal GPU verified working from Mojo — see the WP11 entry below and
-06_MASTER_PLAN; implementation remains), the perf queue in
-docs/benchmarks/RESULTS.md, and the texturing pipeline (phase 2, out of
-scope v1). Perf passes 7-8 (2026-07-09) took the steps-2 e2e smoke from
-627 to 252 s.
+**Current state (2026-08-11):** The image-to-3D runtime is native Mojo from
+PAM input through conditioning, random-noise generation, sampling, decoding,
+meshing, NPZ writing and GLB export. The Python-object bridge, hybrid sampler,
+external-framework comparison harness and its packages have been removed.
+The environment directly pins stable Mojo 1.0.0 and minimal MAX Core 26.5.0
+for `max.algorithm`/`max.gpu`. `pixi run test-all` runs eight native
+regression tasks; see `docs/PURE_MOJO_RUNTIME.md`.
+
+Before that harness was retired, the 18-task migration suite, real-checkpoint
+forwards, conditioning and all eight checkpoint-load comparisons passed. That
+evidence is retained below as historical validation, not as the current task
+or dependency surface.
+
+**WP20 (2026-08-12):** Native QEM post-remesh decimation is implemented in
+`trellis2_mojo/meshing/simplify.mojo` and exposed as
+`--remesh --simplify-faces N`. It runs before texture sampling and normal
+generation. The native regression reduces a 1,992-face watertight remesh to
+632 faces while preserving a closed, oriented manifold and exact determinism.
 
 **Copy:** Done to /Users/myrvoll/Documents/testfiler/trellis-mojo/ (21M)
 
@@ -23,8 +26,9 @@ scope v1). Perf passes 7-8 (2026-07-09) took the steps-2 e2e smoke from
 **Planner:** docs/06_MASTER_PLAN.md (work packages WP0–WP10 with dependencies and
 acceptance criteria) + docs/07_PORT_TRACKER.md (per-file status — update as you go).
 
-**Done:**
-- WP1 (partial): pixi env with Mojo 1.0.0b2 + pytorch 2.12 (`pixi run mojo`);
+**Historical implementation journal:**
+- WP1 (partial): pixi env with stable Mojo 1.0.0 / modular 26.5.0 +
+  pytorch 2.12 (`pixi run mojo`); the 18-task suite passed on 2026-08-11.
   Mojo→Python interop verified; parity harness in tests/parity/.
 - WP3 (core): `trellis2_mojo/sparse/{tensor,basic}.mojo` — VarLenTensor,
   SparseTensor, cat/unbind, elementwise + batch broadcast, getitem, to_dense,

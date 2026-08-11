@@ -12,10 +12,8 @@
 # only the positive children; the predicted subs are returned and later
 # guide the texture decoder (pred_subdiv=False, forward_guided), exactly
 # like the pipeline's decode_shape_slat -> decode_tex_slat handoff.
-# Calling a pred_subdiv=False up block WITHOUT guide subs (torch allows
+# Calling a pred_subdiv=False up block WITHOUT guide subs (the source allows
 # subdiv=None) is not supported — the pipelines always pass guide_subs.
-
-from std.python import PythonObject
 
 from trellis2_mojo.io.state_dict import StateDict
 
@@ -30,7 +28,7 @@ comptime F32 = DType.float32
 
 
 def _binarize(subdiv: SparseTensor[F32]) raises -> SparseTensor[F32]:
-    """subdiv.feats > 0 as 1.0/0.0 (torch binarizes before the C2S unfold)."""
+    """subdiv.feats > 0 as 1.0/0.0 before the C2S unfold."""
     var f = subdiv.vl.feats.copy()
     var out = Tensor[F32](f.shape)
     for i in range(f.numel()):
@@ -173,7 +171,7 @@ struct SparseUnetVaeDecoder(Copyable, Movable):
 
     def forward(self, x: SparseTensor[F32]) raises -> Tuple[SparseTensor[F32], List[SparseTensor[F32]]]:
         """pred_subdiv decoder: -> (decoded, predicted subs per upsample) —
-        the torch forward(x, return_subs=True)."""
+        equivalent to forward(x, return_subs=True) in the source model."""
         if not self.pred_subdiv:
             raise Error("SparseUnetVaeDecoder: use forward_guided when pred_subdiv=False")
         var h = self.from_latent.forward(x)
@@ -192,7 +190,7 @@ struct SparseUnetVaeDecoder(Copyable, Movable):
 
     def forward_guided(self, x: SparseTensor[F32], guide_subs: List[SparseTensor[F32]]) raises -> SparseTensor[F32]:
         """pred_subdiv=False decoder driven by the shape decoder's subs —
-        the torch forward(x, guide_subs=...)."""
+        equivalent to forward(x, guide_subs=...) in the source model."""
         if self.pred_subdiv:
             raise Error("SparseUnetVaeDecoder: use forward when pred_subdiv=True")
         var h = self.from_latent.forward(x)
@@ -207,7 +205,7 @@ struct SparseUnetVaeDecoder(Copyable, Movable):
         return self._finish(h)
 
     def upsample_coords(self, x: SparseTensor[F32], upsample_times: Int) raises -> IntMatrix:
-        """torch .upsample(): run stages until `upsample_times` resolutions
+        """Run stages until `upsample_times` resolutions
         are done and return the coords there (pred_subdiv only)."""
         if not self.pred_subdiv:
             raise Error("SparseUnetVaeDecoder: upsample_coords needs pred_subdiv=True")
@@ -259,7 +257,7 @@ def sparse_unet_vae_decoder_from(
     num_blocks: List[Int],
     pred_subdiv: Bool,
 ) raises -> SparseUnetVaeDecoder:
-    """Build the decoder from a torch state_dict. Assumes the config shape
+    """Build the decoder from a native StateDict. Assumes the config shape
     every checkpoint uses: ConvNeXt stages with C2S up blocks."""
     var convnext = List[SparseConvNeXtBlock3d]()
     var ups = List[SparseResBlockC2S3d]()
@@ -267,10 +265,12 @@ def sparse_unet_vae_decoder_from(
     for stage in range(n_stages):
         var p = "blocks." + String(stage) + "."
         for j in range(num_blocks[stage]):
-            convnext.append(convnext_from(sd, p + String(j), model_channels[stage]))
+            var pj = p + String(j)
+            convnext.append(convnext_from(sd, pj, model_channels[stage]))
         if stage < n_stages - 1:
+            var pn = p + String(num_blocks[stage])
             ups.append(c2s_block_from(
-                sd, p + String(num_blocks[stage]),
+                sd, pn,
                 model_channels[stage], model_channels[stage + 1], pred_subdiv,
             ))
     return SparseUnetVaeDecoder(

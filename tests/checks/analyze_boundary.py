@@ -1,13 +1,11 @@
 # Measure boundary loops (holes) in the golden mesh: edges referenced by
 # exactly one triangle, chained into loops, with perimeter stats vs
 # upstream's fill_holes(max_hole_perimeter=3e-2) threshold.
-import sys
 from collections import defaultdict
 
 import numpy as np
 
-sys.path.insert(0, "tests/parity")  # kjør fra repo-rot
-from torch_ref_wp15 import read_glb  # noqa: E402
+from glb_reader import read_glb
 
 doc, pos, nrm, col, idx = read_glb("outputs/shoe_512_final.glb")
 faces = idx.reshape(-1, 3).astype(np.int64)

@@ -5,33 +5,30 @@
 # loading (trellis2_mojo/io/, WP12), DINOv3 conditioning
 # (models/dinov3.mojo, WP13), FlowEuler sampling (ss -> shape slat -> tex
 # slat), SS-VAE + UNet-VAE decoding, FDG head and pure-Mojo mesh
-# extraction + OBJ export. The only Python left (per ADR 0007):
-# torch.randn, so noise is drawn from the same seeded stream as the
-# original pipeline / trellis-mac.
+# extraction + OBJ/NPZ/GLB export. Noise generation and every output writer
+# are native Mojo; the runner has no Python or external tensor-framework
+# dependency.
 #
 # Mirrors Trellis2ImageTo3DPipeline.run(pipeline_type='512'): sampler
 # params and slat normalizations come from pipeline.json, models load from
 # the local HF cache one at a time (~5.3 GB per DiT in f32; each stage is
 # its own function so the model frees before the next loads).
 #
-# Noise-stream note: upstream seeds BEFORE get_cond, but conditioning
-# consumes no RNG at inference — only model CONSTRUCTION draws from the
-# global generator, and upstream constructs the extractor at
-# from_pretrained time, pre-seed. We therefore compute cond first and seed
-# after, which reproduces the upstream draw order exactly:
-# randn(1, C, 16, 16, 16) -> randn(N, 32) -> randn(N, 32).
+# Noise-stream note: one project-owned Rng is seeded after conditioning and
+# advanced across stages in pipeline order. Same Mojo version + seed +
+# settings is bit-reproducible, but old framework-RNG goldens intentionally
+# do not match after the dependency removal.
 #
 # Input must be a PAM P7 file, RGBA with a real alpha channel (ADR 0007 —
 # no rembg). PNG -> PAM is a one-liner, see README_MOJO.md.
 # Run from the repo root:
 #   pixi run e2e -- <image.pam> [--seed N] [--steps N] [--out prefix] [--no-tex]
 
-from std.python import Python, PythonObject
 from std.sys import argv
 from std.time import perf_counter_ns
 
+from trellis2_mojo.cli import parse_float, parse_int
 from trellis2_mojo.gpu.linear import GpuContext, gpu_context_from_env
-from trellis2_mojo.interop import tensor_from_torch, tensor_to_torch
 from trellis2_mojo.checkpoints import (
     load_sparse_structure_flow,
     load_sparse_structure_decoder,
@@ -40,6 +37,7 @@ from trellis2_mojo.checkpoints import (
 )
 from trellis2_mojo.io.hf_cache import pipeline_config_json
 from trellis2_mojo.io.json import JsonDoc
+from trellis2_mojo.io.npz import write_tex_voxels_npz
 from trellis2_mojo.pipelines.conditioning import ImageConditioner, zeros_like_cond
 from trellis2_mojo.pipelines.image_to_3d import (
     SSFlowVelocity,
@@ -62,12 +60,14 @@ from trellis2_mojo.meshing.postprocess import (
     unify_face_orientations,
 )
 from trellis2_mojo.meshing.remesh import remesh_narrow_band_dc
+from trellis2_mojo.meshing.simplify import simplify_qem
 from trellis2_mojo.meshing.vertex_attrs import (
     grid_sample_trilinear,
     vertex_normals,
 )
 from trellis2_mojo.sparse.tensor import Tensor, IntMatrix
 from trellis2_mojo.sparse.basic import SparseTensor
+from trellis2_mojo.rng import Rng, randn
 
 comptime F32 = DType.float32
 
@@ -106,29 +106,22 @@ def _norm_tensor(doc: JsonDoc, args_node: Int, key: String, field: String) raise
     return t^
 
 
-def parse_int(s: String) raises -> Int:
-    return Int(py=Python.import_module("builtins").int(s))
-
-
-def parse_float(s: String) raises -> Float64:
-    return Float64(py=Python.import_module("builtins").float(s))
-
-
-def elapsed(t0: UInt) -> String:
+def elapsed(t0: Int) -> String:
     var s = Float64(perf_counter_ns() - t0) / 1e9
     return String(Int(s)) + "s"
 
 
 def run_ss_stage(
-    torch: PythonObject, cond: Tensor[F32], neg: Tensor[F32],
+    mut rng: Rng, cond: Tensor[F32], neg: Tensor[F32],
     p: SamplerParams, ss_res: Int, gpu: Optional[GpuContext],
 ) raises -> IntMatrix:
     """Stage 1: dense DiT sampling + SS-VAE decode -> active voxel coords."""
     var t0 = perf_counter_ns()
     var model = load_sparse_structure_flow(gpu)
     print("  [ss] dit load:", elapsed(t0))
-    var noise = tensor_from_torch(
-        torch.randn(1, model.in_channels, model.resolution, model.resolution, model.resolution)
+    var noise = randn(
+        rng,
+        [1, model.in_channels, model.resolution, model.resolution, model.resolution],
     )
     t0 = perf_counter_ns()
     var decoder = load_sparse_structure_decoder()
@@ -145,7 +138,7 @@ def run_ss_stage(
 
 
 def run_shape_slat_stage(
-    torch: PythonObject, model_key: String, cond: Tensor[F32], neg: Tensor[F32],
+    mut rng: Rng, model_key: String, cond: Tensor[F32], neg: Tensor[F32],
     coords: IntMatrix, mean: Tensor[F32], std: Tensor[F32], p: SamplerParams,
     gpu: Optional[GpuContext],
 ) raises -> SparseTensor[F32]:
@@ -154,7 +147,7 @@ def run_shape_slat_stage(
     var t0 = perf_counter_ns()
     var model = load_slat_flow(model_key, gpu)
     print("  [slat] dit load:", elapsed(t0))
-    var noise = tensor_from_torch(torch.randn(coords.rows, model.in_channels))
+    var noise = randn(rng, [coords.rows, model.in_channels])
     var sampler = FlowEulerSampler(p.sigma_min)
     var vel = SlatFlowVelocity(model^, coords.copy(), cond.copy(), neg.copy())
     t0 = perf_counter_ns()
@@ -185,7 +178,7 @@ def run_cascade_stage(
 
 
 def run_tex_slat_stage(
-    torch: PythonObject, model_key: String, cond: Tensor[F32], neg: Tensor[F32],
+    mut rng: Rng, model_key: String, cond: Tensor[F32], neg: Tensor[F32],
     shape_slat: SparseTensor[F32],
     shape_mean: Tensor[F32], shape_std: Tensor[F32],
     tex_mean: Tensor[F32], tex_std: Tensor[F32], p: SamplerParams,
@@ -194,8 +187,9 @@ def run_tex_slat_stage(
     """Stage 3: shape slat re-normalized with the SHAPE stats rides as
     concat_cond; the sampled texture slat de-normalizes with the TEX stats."""
     var model = load_slat_flow(model_key, gpu)
-    var noise = tensor_from_torch(
-        torch.randn(shape_slat.coords.rows, model.in_channels - shape_slat.vl.feats.shape[1])
+    var noise = randn(
+        rng,
+        [shape_slat.coords.rows, model.in_channels - shape_slat.vl.feats.shape[1]],
     )
     var sampler = FlowEulerSampler(p.sigma_min)
     var vel = SlatFlowVelocity(
@@ -206,30 +200,6 @@ def run_tex_slat_stage(
     return sample_slat(
         sampler, vel, noise, tex_mean, tex_std,
         p.steps, p.rescale_t, p.strength, p.interval_lo, p.interval_hi, p.rescale,
-    )
-
-
-def save_tex_voxels(
-    torch: PythonObject, path: String, tex: SparseTensor[F32], resolution: Int
-) raises:
-    """Texture voxels -> npz (coords int32 [T,3], attrs f32 [T,6] in the
-    upstream pbr layout base_color/metallic/roughness/alpha, plus origin +
-    voxel_size) — the payload MeshWithVoxel carries for texture baking."""
-    var np = Python.import_module("numpy")
-    var t = tex.coords.rows
-    var cf = Tensor[F32]([t, 3])
-    for r in range(t):
-        for c in range(3):
-            cf.data[r * 3 + c] = Float32(tex.coords.at(r, c + 1))
-    var coords_py = tensor_to_torch(cf).to(torch.int32).numpy()
-    var attrs_py = tensor_to_torch(tex.vl.feats).numpy()
-    var origin = Python.list()
-    for _ in range(3):
-        origin.append(-0.5)
-    _ = np.savez(
-        path, coords=coords_py, attrs=attrs_py,
-        origin=np.array(origin, dtype=np.float32),
-        voxel_size=1.0 / Float64(resolution),
     )
 
 
@@ -244,6 +214,7 @@ def main() raises:
     var remesh_band = 1.0
     var remesh_project = 0.9
     var remesh_res = 0  # 0 = pipeline-oppløsningen; lavere = færre triangler
+    var simplify_faces = 0  # 0 = av; target for QEM etter remesh
     var i = 1
     while i < len(argv()):
         var a = String(argv()[i])
@@ -269,6 +240,9 @@ def main() raises:
         elif a == "--remesh-res":
             i += 1
             remesh_res = parse_int(String(argv()[i]))
+        elif a == "--simplify-faces":
+            i += 1
+            simplify_faces = parse_int(String(argv()[i]))
         elif a == "--pipeline":
             i += 1
             var pt = String(argv()[i])
@@ -287,10 +261,16 @@ def main() raises:
             " [--seed N] [--steps N] [--out prefix] [--no-tex]"
             " [--pipeline 512|1024] [--remesh]"
             " [--remesh-band B] [--remesh-project P] [--remesh-res N]"
+            " [--simplify-faces N]"
         )
+    if simplify_faces < 0:
+        raise Error("--simplify-faces must be positive")
+    if simplify_faces > 0 and not remesh:
+        raise Error("--simplify-faces requires --remesh")
+    if simplify_faces > 0 and not with_tex:
+        raise Error("--simplify-faces requires GLB export (omit --no-tex)")
 
     var t_start = perf_counter_ns()
-    var torch = Python.import_module("torch")
     var gpu = gpu_context_from_env()  # WP11: TRELLIS2_GPU=1 -> Metal linear
     var doc = pipeline_config_json()
     var args_node = doc.obj_get(doc.root, "args")
@@ -315,9 +295,8 @@ def main() raises:
     print(", steps", ss_params.steps, ")")
     print("image:", image_path)
 
-    # conditioning first (upstream constructs DINOv3 pre-seed at
-    # from_pretrained; the Mojo loader draws no torch RNG at all), THEN
-    # the seed that governs every noise draw
+    # Conditioning is deterministic and consumes no random values. Start one
+    # native stream afterwards and pass it through every sampling stage.
     var t0 = perf_counter_ns()
     var conditioner = ImageConditioner(gpu)
     var cond = conditioner.get_cond(image_path, 512)
@@ -334,17 +313,19 @@ def main() raises:
         print("] + [", end="")
         print(cond_hr.shape[0], cond_hr.shape[1], cond_hr.shape[2], end="")
     print("] in", elapsed(t0))
-    _ = torch.manual_seed(seed)
+    if seed < 0:
+        raise Error("--seed must be non-negative")
+    var rng = Rng(UInt64(seed))
 
     t0 = perf_counter_ns()
-    var coords = run_ss_stage(torch, cond, neg, ss_params, ss_res, gpu)
+    var coords = run_ss_stage(rng, cond, neg, ss_params, ss_res, gpu)
     print("[2/6] sparse structure:", coords.rows, "active voxels @", ss_res, "^3 in", elapsed(t0))
     if coords.rows == 0:
         raise Error("no active voxels — sparse-structure stage produced an empty grid")
 
     t0 = perf_counter_ns()
     var shape_slat = run_shape_slat_stage(
-        torch, "shape_slat_flow_model_512", cond, neg, coords,
+        rng, "shape_slat_flow_model_512", cond, neg, coords,
         shape_mean, shape_std, shape_params, gpu,
     )
     if cascade_1024:
@@ -354,7 +335,7 @@ def main() raises:
         # (noise draw order LR -> HR matches upstream's RNG stream)
         var hr_coords = run_cascade_stage(shape_slat, gpu)
         shape_slat = run_shape_slat_stage(
-            torch, "shape_slat_flow_model_1024", cond_hr, neg_hr, hr_coords,
+            rng, "shape_slat_flow_model_1024", cond_hr, neg_hr, hr_coords,
             shape_mean, shape_std, shape_params, gpu,
         )
     print("[3/6] shape slat:", shape_slat.coords.rows, "tokens in", elapsed(t0))
@@ -364,12 +345,12 @@ def main() raises:
         t0 = perf_counter_ns()
         if cascade_1024:
             tex_slat = run_tex_slat_stage(
-                torch, "tex_slat_flow_model_1024", cond_hr, neg_hr, shape_slat,
+                rng, "tex_slat_flow_model_1024", cond_hr, neg_hr, shape_slat,
                 shape_mean, shape_std, tex_mean, tex_std, tex_params, gpu,
             )
         else:
             tex_slat = run_tex_slat_stage(
-                torch, "tex_slat_flow_model_512", cond, neg, shape_slat,
+                rng, "tex_slat_flow_model_512", cond, neg, shape_slat,
                 shape_mean, shape_std, tex_mean, tex_std, tex_params, gpu,
             )
         print("[4/6] tex slat:", tex_slat.coords.rows, "tokens in", elapsed(t0))
@@ -393,9 +374,11 @@ def main() raises:
         xyz, decoded[0].vl.feats, decoded[1].vl.feats, decoded[2].vl.feats,
         aabb_min, aabb_max, resolution,
     )
+    var mesh_vertices = mesh[0].copy()
+    var mesh_faces = mesh[1].copy()
     var obj_path = out_prefix + ".obj"
-    write_obj(obj_path, mesh[0], mesh[1])
-    print("[6/6] mesh:", mesh[0].shape[0], "vertices,", mesh[1].rows, "triangles in", elapsed(t0))
+    write_obj(obj_path, mesh_vertices, mesh_faces)
+    print("[6/6] mesh:", mesh_vertices.shape[0], "vertices,", mesh_faces.rows, "triangles in", elapsed(t0))
     print("saved:", obj_path)
 
     if with_tex:
@@ -403,7 +386,9 @@ def main() raises:
         var tex_dec = load_unet_decoder("tex_slat_decoder", gpu)
         var tex_out = decode_tex(tex_dec, tex_slat, decoded[3])
         var npz_path = out_prefix + "_texvoxels.npz"
-        save_tex_voxels(torch, npz_path, tex_out, resolution)
+        write_tex_voxels_npz(
+            npz_path, tex_out.coords, tex_out.vl.feats, resolution
+        )
         print("tex decode:", tex_out.coords.rows, "voxels in", elapsed(t0))
         print("saved:", npz_path)
 
@@ -417,10 +402,8 @@ def main() raises:
         # fill_holes(max_hole_perimeter=3e-2) — GLB only, the OBJ/npz
         # stay raw like upstream's MeshWithVoxel payload.
         t0 = perf_counter_ns()
-        var fverts = mesh[0].copy()
-        var ffaces = IntMatrix(mesh[1].rows, 3)
-        for i in range(len(mesh[1].data)):
-            ffaces.data[i] = mesh[1].data[i]
+        var fverts = mesh_vertices.copy()
+        var ffaces = mesh_faces.copy()
         # upstream order (to_glb minus the CUDA-only simplify steps):
         # fill -> repair_non_manifold_edges -> remove_small_connected_
         # components(1e-5) -> fill — rings with a non-manifold edge read
@@ -499,6 +482,20 @@ def main() raises:
         if not remesh:
             var uni = unify_face_orientations(ffaces, fverts)
             print("orient: flipped", uni[0], "of", ffaces.rows, "faces over", uni[1], "sheets")
+        elif simplify_faces > 0 and ffaces.rows > simplify_faces:
+            # Native QEM edge collapse on the already-watertight DC mesh.
+            # Attribute sampling and normals happen afterwards, so the new
+            # vertices receive PBR values from their final positions.
+            var before_v = fverts.shape[0]
+            var before_f = ffaces.rows
+            var simplified = simplify_qem(fverts, ffaces, simplify_faces)
+            fverts = simplified[0].copy()
+            ffaces = simplified[1].copy()
+            print(
+                "simplify:", before_v, "V /", before_f, "F ->",
+                fverts.shape[0], "V /", ffaces.rows, "F ( target",
+                simplify_faces, ")",
+            )
         var nverts = fverts.shape[0]
         var query = Tensor[F32]([nverts, 3])
         for i in range(nverts * 3):
@@ -531,12 +528,12 @@ def main() raises:
         print("saved:", glb_path)
 
     # structural summary for the trellis-mac comparison (WP0-golden light)
-    if mesh[0].shape[0] > 0:
+    if mesh_vertices.shape[0] > 0:
         var lo = List[Float32](length=3, fill=Float32(1e30))
         var hi = List[Float32](length=3, fill=Float32(-1e30))
-        for v in range(mesh[0].shape[0]):
+        for v in range(mesh_vertices.shape[0]):
             for c in range(3):
-                var x = mesh[0].data[v * 3 + c]
+                var x = mesh_vertices.data[v * 3 + c]
                 if x < lo[c]:
                     lo[c] = x
                 if x > hi[c]:

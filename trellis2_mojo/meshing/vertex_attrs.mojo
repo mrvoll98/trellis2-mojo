@@ -2,15 +2,15 @@
 # a pure-Mojo port of flex_gemm.ops.grid_sample.grid_sample_3d
 # (mode='trilinear', B=1) plus area-weighted vertex normals.
 #
-# The trilinear semantics mirror the flex_gemm torch reference EXACTLY:
-# the 8 neighbor voxels are the TRUNCATED (toward zero, torch .int())
+# The trilinear semantics mirror flex_gemm exactly:
+# the 8 neighbor voxels are truncated toward zero
 # p±0.5 coordinates — for p < 0.5 two offsets truncate to the SAME voxel
 # and it counts twice, a reference quirk we keep — each neighbor weighs
 # prod(1 - |neigh + 0.5 - p|) in x,y,z order, voxels absent from the
 # sparse set weigh 0 (hashmap miss upstream, Dict miss here; negative or
 # out-of-range coords are misses too), and the result is renormalized by
 # the weight sum clamped to 1e-12 (all-miss queries return 0).
-# Parity: pixi run test-wp15 (plain-torch reimplementation as reference).
+# These edge-case semantics were retained from the validated source behavior.
 
 from std.collections import Dict
 from std.math import sqrt
@@ -19,17 +19,22 @@ from trellis2_mojo.sparse.tensor import Tensor, IntMatrix
 
 comptime F32 = DType.float32
 
-# the reference's neighbor-offset order (torch tensor rows, ±0.5 each axis)
-comptime _OFFS: InlineArray[Float32, 24] = [
-    -0.5, -0.5, -0.5,
-    -0.5, -0.5, 0.5,
-    -0.5, 0.5, -0.5,
-    -0.5, 0.5, 0.5,
-    0.5, -0.5, -0.5,
-    0.5, -0.5, 0.5,
-    0.5, 0.5, -0.5,
-    0.5, 0.5, 0.5,
-]
+# Neighbor-offset table (±0.5 on each axis).
+# Nightly: comptime InlineArray cannot be materialised to runtime (not
+# ImplicitlyCopyable) — index via a tiny helper that keeps the table local.
+@always_inline
+def _off(i: Int) -> Float32:
+    var t: InlineArray[Float32, 24] = [
+        -0.5, -0.5, -0.5,
+        -0.5, -0.5, 0.5,
+        -0.5, 0.5, -0.5,
+        -0.5, 0.5, 0.5,
+        0.5, -0.5, -0.5,
+        0.5, -0.5, 0.5,
+        0.5, 0.5, -0.5,
+        0.5, 0.5, 0.5,
+    ]
+    return t[i]
 
 
 def _pack(x: Int, y: Int, z: Int) raises -> Int:
@@ -69,10 +74,10 @@ def grid_sample_trilinear(
             acc[ch] = 0
         var wsum: Float32 = 0
         for k in range(8):
-            # torch .int() truncates toward zero — keep that, NOT floor
-            var nx = Int(px + _OFFS[k * 3 + 0])
-            var ny = Int(py + _OFFS[k * 3 + 1])
-            var nz = Int(pz + _OFFS[k * 3 + 2])
+            # Integer conversion truncates toward zero — keep that, NOT floor
+            var nx = Int(px + _off(k * 3 + 0))
+            var ny = Int(py + _off(k * 3 + 1))
+            var nz = Int(pz + _off(k * 3 + 2))
             if nx < 0 or ny < 0 or nz < 0:
                 continue  # upstream hashmap miss: contributes nothing
             if nx >= grid_size or ny >= grid_size or nz >= grid_size:

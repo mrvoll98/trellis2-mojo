@@ -14,16 +14,26 @@ from trellis2_mojo.sparse.tensor import Tensor, IntMatrix
 
 comptime F32 = DType.float32
 
-# edge_neighbor_voxel_offset[axis][corner] -> (dx, dy, dz): the four voxels
-# sharing the edge along `axis` leaving this voxel's origin corner.
-comptime _EDGE_OFFSETS: InlineArray[Int, 36] = [
-    0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0,
-    0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1,
-    0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0,
-]
-# quad -> two triangles, the stub's two diagonal splits
-comptime _SPLIT_1: InlineArray[Int, 6] = [0, 1, 2, 0, 2, 3]
-comptime _SPLIT_2: InlineArray[Int, 6] = [0, 1, 3, 3, 1, 2]
+# Edge / split lookup tables as helpers (nightly: no comptime InlineArray
+# materialisation to runtime).
+@always_inline
+def _edge_off(i: Int) -> Int:
+    var t: InlineArray[Int, 36] = [
+        0, 0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0,
+        0, 0, 0, 1, 0, 0, 1, 0, 1, 0, 0, 1,
+        0, 0, 0, 0, 1, 0, 1, 1, 0, 1, 0, 0,
+    ]
+    return t[i]
+
+@always_inline
+def _split1(i: Int) -> Int:
+    var t: InlineArray[Int, 6] = [0, 1, 2, 0, 2, 3]
+    return t[i]
+
+@always_inline
+def _split2(i: Int) -> Int:
+    var t: InlineArray[Int, 6] = [0, 1, 3, 3, 1, 2]
+    return t[i]
 
 
 def _pack(x: Int, y: Int, z: Int) raises -> Int:
@@ -79,9 +89,9 @@ def flexible_dual_grid_to_mesh(
             for corner in range(4):
                 var base = axis * 12 + corner * 3
                 var key = _pack(
-                    coords_xyz.at(i, 0) + _EDGE_OFFSETS[base],
-                    coords_xyz.at(i, 1) + _EDGE_OFFSETS[base + 1],
-                    coords_xyz.at(i, 2) + _EDGE_OFFSETS[base + 2],
+                    coords_xyz.at(i, 0) + _edge_off(base),
+                    coords_xyz.at(i, 1) + _edge_off(base + 1),
+                    coords_xyz.at(i, 2) + _edge_off(base + 2),
                 )
                 var idx = lut.get(key, -1)
                 if idx < 0:
@@ -125,18 +135,20 @@ def flexible_dual_grid_to_mesh(
         ]
         var pick_first: Bool
         if use_split:
-            # sw[q0]*sw[q2] > sw[q1]*sw[q3] -> split 1 (strict, like torch.where cond)
+            # sw[q0]*sw[q2] > sw[q1]*sw[q3] -> split 1 (strict condition)
             var sw02 = split_weight.data[q[0]] * split_weight.data[q[2]]
             var sw13 = split_weight.data[q[1]] * split_weight.data[q[3]]
             pick_first = sw02 > sw13
         else:
-            pick_first = _align(vertices, q, _SPLIT_1) > _align(vertices, q, _SPLIT_2)
+            var split1: InlineArray[Int, 6] = [0, 1, 2, 0, 2, 3]
+            var split2: InlineArray[Int, 6] = [0, 1, 3, 3, 1, 2]
+            pick_first = _align(vertices, q, split1) > _align(vertices, q, split2)
         for j in range(6):
             var perm: Int
             if pick_first:
-                perm = _SPLIT_1[j]
+                perm = _split1(j)
             else:
-                perm = _SPLIT_2[j]
+                perm = _split2(j)
             tris.set(2 * k + j // 3, j % 3, q[perm])
     return (vertices^, tris^)
 

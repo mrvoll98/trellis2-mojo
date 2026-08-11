@@ -6,7 +6,7 @@
 # mlp) the cross-block runs WHOLE-BLOCK device-resident
 # (gpu_cross_block_forward) — one upload, one readback, glue on the GPU.
 
-from std.gpu.host import DeviceBuffer
+from max.gpu.host import DeviceBuffer
 
 from trellis2_mojo.gpu.block import gpu_cross_block_forward, gpu_cross_block_enqueue
 from trellis2_mojo.gpu.linear import gpu_mlp_wants

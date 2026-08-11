@@ -1,9 +1,9 @@
 # WP10 — Benchmark-resultater
 
-Målt 2026-07-08. Kjør selv: `pixi run bench`
-(= `mojo run -I . benchmarks/bench_wp10.mojo`; Python-baselinesiden ligger i
-`benchmarks/bench_torch_ref.py`). `BENCH_TORCH_THREADS=1` pinner torch til
-én tråd.
+> **Historisk resultatarkiv:** Målt 2026-07-08 med den daværende
+> sammenligningsharnessen. Referansedriveren og `pixi run bench` ble fjernet
+> 2026-08-11 sammen med framework-avhengigheten. Mojo-mikrobenchmarkene i
+> `benchmarks/` kan fortsatt kjøres direkte.
 
 **Miljø:** macOS 27.0 arm64 (Apple Silicon, 14 kjerner), Python 3.14.6,
 torch 2.12.0 (CPU), Mojo 1.0.0b2.

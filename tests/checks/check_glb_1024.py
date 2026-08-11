@@ -1,12 +1,9 @@
 # WP17 golden check (1024-cascade): same as the 512 check but with a
 # SPARSE vectorized lookup (a dense 1024^3 x 6 volume is 26 GB) — packed
 # coord keys + searchsorted instead of dense indexing.
-import sys
-
 import numpy as np
 
-sys.path.insert(0, "tests/parity")  # kjør fra repo-rot
-from torch_ref_wp15 import read_glb  # noqa: E402
+from glb_reader import read_glb
 
 GLB = "outputs/shoe_1024_final.glb"
 NPZ = "outputs/shoe_1024_final_texvoxels.npz"

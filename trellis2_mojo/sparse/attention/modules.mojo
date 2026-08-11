@@ -5,7 +5,7 @@
 # with dense context [N, L, Cctx] (the models' cross-attn conditioning is
 # always dense image features). Modes: full / windowed / double_windowed.
 
-from std.algorithm import parallelize
+from max.algorithm import parallelize
 from std.math import sqrt
 
 from trellis2_mojo.gpu.context import GpuContext
@@ -73,12 +73,12 @@ struct MultiHeadRMSNorm(Copyable, Movable):
                     var accv = SIMD[F32, W](0)
                     var i = 0
                     while i + W <= d:
-                        var v = xp.load[width=W](base + i)
+                        var v = xp.unsafe_load[width=W](base + i)
                         accv += v * v
                         i += W
                     var norm = accv.reduce_add()
                     while i < d:
-                        norm += xp[base + i] * xp[base + i]
+                        norm += xp[unsafe_offset=base + i] * xp[unsafe_offset=base + i]
                         i += 1
                     norm = sqrt(norm)
                     if norm < 1e-12:
@@ -87,10 +87,10 @@ struct MultiHeadRMSNorm(Copyable, Movable):
                     var sv = SIMD[F32, W](sc)
                     i = 0
                     while i + W <= d:
-                        op.store(base + i, xp.load[width=W](base + i) / nv * gp.load[width=W](gbase + i) * sv)
+                        op.unsafe_store(base + i, xp.unsafe_load[width=W](base + i) / nv * gp.unsafe_load[width=W](gbase + i) * sv)
                         i += W
                     while i < d:
-                        op[base + i] = xp[base + i] / norm * gp[gbase + i] * sc
+                        op[unsafe_offset=base + i] = xp[unsafe_offset=base + i] / norm * gp[unsafe_offset=gbase + i] * sc
                         i += 1
 
         var n_chunks = (rows + RC - 1) // RC

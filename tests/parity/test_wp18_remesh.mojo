@@ -160,22 +160,27 @@ def main() raises:
     # positive signed volume (orientation), verts near the surface
     var c1 = cube_mesh(-1)
     var r1 = remesh_narrow_band_dc(c1[0], c1[1], 0, 0, 0, scale, R, band, 0.9)
-    if r1[0].shape[0] == 0 or r1[1].rows == 0:
+    # Nightly: bind tuple elements before multi-use to avoid invalidated interior refs.
+    var v1 = r1[0].copy()
+    var f1 = r1[1].copy()
+    var n_v1 = v1.shape[0]
+    var n_f1 = f1.rows
+    if n_v1 == 0 or n_f1 == 0:
         raise Error("cube remesh: empty output")
-    if boundary_edges(r1[1], r1[0].shape[0]) != 0:
+    if boundary_edges(f1, n_v1) != 0:
         raise Error("cube remesh: not watertight")
-    check_consistent_winding(r1[1], r1[0].shape[0])
-    var vol = signed_volume(r1[0], r1[1])
+    check_consistent_winding(f1, n_v1)
+    var vol = signed_volume(v1, f1)
     if vol <= 0:
         raise Error("cube remesh: signed volume must be positive (orientation)")
     if vol >= 0.47 * 0.47 * 0.47:
         raise Error("cube remesh: shell volume larger than outer box")
     var worst: Float64 = 0
-    for i in range(r1[0].shape[0]):
+    for i in range(n_v1):
         var d = dist_to_cube_surface(
-            Float64(r1[0].data[i * 3 + 0]),
-            Float64(r1[0].data[i * 3 + 1]),
-            Float64(r1[0].data[i * 3 + 2]),
+            Float64(v1.data[i * 3 + 0]),
+            Float64(v1.data[i * 3 + 1]),
+            Float64(v1.data[i * 3 + 2]),
         )
         if d > worst:
             worst = d
@@ -183,7 +188,7 @@ def main() raises:
     if worst > 0.75 * eps:
         raise Error("cube remesh: vertices too far from surface: " + String(worst))
     print(
-        "  cube: watertight shell,", r1[0].shape[0], "V /", r1[1].rows,
+        "  cube: watertight shell,", n_v1, "V /", n_f1,
         "F, signed vol", vol, ", max surface dist", worst,
     )
 
@@ -192,26 +197,32 @@ def main() raises:
     # branch exists for
     var c2 = cube_mesh(3)
     var r2 = remesh_narrow_band_dc(c2[0], c2[1], 0, 0, 0, scale, R, band, 0.9)
-    if boundary_edges(r2[1], r2[0].shape[0]) != 0:
+    var v2 = r2[0].copy()
+    var f2 = r2[1].copy()
+    var n_v2 = v2.shape[0]
+    var n_f2 = f2.rows
+    if boundary_edges(f2, n_v2) != 0:
         raise Error("punctured cube: remesh must be watertight")
-    check_consistent_winding(r2[1], r2[0].shape[0])
-    if signed_volume(r2[0], r2[1]) <= 0:
+    check_consistent_winding(f2, n_v2)
+    if signed_volume(v2, f2) <= 0:
         raise Error("punctured cube: orientation flipped")
     print(
-        "  punctured cube: watertight (", r2[0].shape[0], "V /",
-        r2[1].rows, "F ) — crack swallowed",
+        "  punctured cube: watertight (", n_v2, "V /",
+        n_f2, "F ) — crack swallowed",
     )
 
     # 3) determinism
     var c3 = cube_mesh(3)
     var r3 = remesh_narrow_band_dc(c3[0], c3[1], 0, 0, 0, scale, R, band, 0.9)
-    if r3[0].shape[0] != r2[0].shape[0] or r3[1].rows != r2[1].rows:
+    var v3 = r3[0].copy()
+    var f3 = r3[1].copy()
+    if v3.shape[0] != n_v2 or f3.rows != n_f2:
         raise Error("determinism: sizes differ")
-    for i in range(len(r2[0].data)):
-        if r2[0].data[i] != r3[0].data[i]:
+    for i in range(len(v2.data)):
+        if v2.data[i] != v3.data[i]:
             raise Error("determinism: vertex data differs")
-    for i in range(len(r2[1].data)):
-        if r2[1].data[i] != r3[1].data[i]:
+    for i in range(len(f2.data)):
+        if f2.data[i] != f3.data[i]:
             raise Error("determinism: face data differs")
     print("  deterministic across reruns")
 

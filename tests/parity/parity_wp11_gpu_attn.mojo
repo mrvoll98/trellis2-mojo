@@ -232,7 +232,7 @@ def check_case(
 def check_single(
     gpu: GpuContext, t: Int, tkv: Int, h: Int, d: Int, seed: Int, atol: Float32
 ) raises:
-    """gpu_varlen_sdpa_single (odd lengths, q-padding — WP11 step 4) vs
+    """GPU varlen SDPA single (odd lengths, q-padding — WP11 step 4) vs
     the CPU varlen_sdpa with single-segment offsets."""
     var q = Tensor[F32]([t, h, d])
     var k = Tensor[F32]([tkv, h, d])

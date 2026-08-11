@@ -1,14 +1,16 @@
-# TRELLIS.2 → Mojo: pure-Mojo image→3D inference on Apple Silicon
+# TRELLIS.2 → Mojo: native image→3D inference on Apple Silicon
 
-A pure-[Mojo](https://www.modular.com/mojo) inference port of Microsoft's
-[TRELLIS.2](https://github.com/microsoft/TRELLIS.2) image→3D pipeline,
-built and verified op-by-op against the PyTorch original. The whole
-pipeline — PAM decode + preprocess, DINOv3 conditioning, flow-matching
-DiT sampling, VAE decoding, FDG mesh extraction, mesh post-processing /
-remeshing, textured GLB export — runs in Mojo. The only Python left in
-the runner is `torch.randn` (noise-stream compatibility with the
-original); Python/torch otherwise remain only in `tests/parity/` and
-`benchmarks/` as ground truth.
+A [Mojo](https://www.modular.com/mojo) inference port of Microsoft's
+[TRELLIS.2](https://github.com/microsoft/TRELLIS.2) image→3D pipeline.
+The production path is Mojo from end to end: PAM decoding and preprocessing,
+DINOv3 conditioning, random-noise generation, flow-matching DiT sampling,
+VAE decoding, FDG mesh extraction, mesh post-processing/remeshing, NPZ
+sidecar writing and textured GLB export.
+
+There is no Python tensor bridge or PyTorch dependency. Model weights load
+directly from safetensors into native `StateDict` values; a project-owned
+xorshift64*/Box–Muller generator provides deterministic standard-normal
+noise; and the NPZ writer emits ZIP/NumPy payloads directly from Mojo.
 
 Highlights (M4 Pro, macOS arm64):
 
@@ -23,59 +25,59 @@ Highlights (M4 Pro, macOS arm64):
   a port of cumesh's remesh branch. Zero boundary edges by
   construction; `--remesh-res` trades triangle count (~N²) against
   detail (512 → ~2M triangles, 256 → ~480k, 128 → ~115k).
-- **Op-for-op parity suite**: 18 test files compare every ported
-  component against the seeded PyTorch original (`pixi run test-all`);
-  real-checkpoint and conditioning parity run separately against the
-  local HF cache.
-- Six empirically probed Metal/Mojo-1.0.0b2 pitfalls (binding limits,
+- **Native regression suite**: runtime/RNG/NPZ, sparse tensor, mesh and
+  Metal CPU-vs-GPU checks run with `pixi run test-all`.
+- Six empirically probed Metal/Mojo pitfalls (binding limits,
   commit semantics, write-combined memory, 4 GiB binding offsets, …)
   are documented in the `trellis2_mojo/gpu/` file headers, and eight
   upstream bugs found during porting are listed in
   `docs/08_HANDOVER.md`.
 
-Project journal: `docs/08_HANDOVER.md` (state + next steps),
+Project journal: `docs/08_HANDOVER.md` (state + history),
 `docs/07_PORT_TRACKER.md` (file-by-file), `docs/06_MASTER_PLAN.md`
-(work packages), `MOJO_STATUS.md` (English summary). The upstream
-README is preserved as `docs/README_upstream_trellis2.md`.
+(work packages), `docs/MOJO_NIGHTLY_MIGRATION.md` (Mojo 1.0 migration),
+`docs/PURE_MOJO_RUNTIME.md` (framework-removal details), and
+`MOJO_STATUS.md` (English summary). Older planning and comparison documents
+are retained as an implementation journal; their removed commands and
+dependencies are not part of the current runtime.
 
 ## Setup
 
-Everything is pinned in `pixi.toml` (Mojo 1.0.0b2, torch 2.12).
-The upstream reference code is not vendored — the parity tests
-compare against the untouched original, fetched into `trellis2/`,
-`o-voxel/` and `configs/` by:
+The environment pins stable Mojo 1.0.0 plus the minimal MAX Core 26.5.0 module
+package required by `max.algorithm` and `max.gpu`. It does not use the broad
+`modular` meta-package. Install it and run the native suite from the repository
+root:
 
 ```
-scripts/fetch_upstream.sh   # clones microsoft/TRELLIS.2 @ the pinned commit
+pixi install
+pixi run mojo --version     # Mojo 1.0.0 (ed45d567)
+pixi run test-all           # eight native Mojo tasks
 ```
 
-Then:
+Individual tasks are `test-runtime`, `test-sparse`, `test-wp16`, `test-wp18`,
+`test-simplify`, `test-wp11`, `test-wp11-attn`, and `test-wp11-conv`. The
+WP11 checks need the Metal GPU. Historical comparison results live in
+`docs/benchmarks/RESULTS.md`; remaining Mojo-only microbenchmarks can be run
+directly, for example:
 
 ```
-pixi run test-all      # full parity suite (18 test files, no HF cache needed)
-pixi run bench         # Mojo vs torch benchmarks (docs/benchmarks/RESULTS.md)
+pixi run mojo run -I . benchmarks/microbench_linear.mojo
 ```
 
-(The runner itself — `pixi run e2e` — is pure Mojo and does not need
-the upstream code.)
-
-Real-checkpoint tests (need the local HF cache with
+The end-to-end runner needs the local Hugging Face cache with
 microsoft/TRELLIS.2-4B, microsoft/TRELLIS-image-large and
-facebook/dinov3-vitl16-pretrain-lvd1689m; read 10+ GB per run):
-`pixi run test-real`, `pixi run test-cond`, `pixi run test-io`.
+facebook/dinov3-vitl16-pretrain-lvd1689m. Checkpoint loading itself is native
+Mojo and reads 10+ GB over a complete run.
 
 ## Running image → 3D
 
 Input must be a **PAM P7** file, RGBA with a real alpha channel (object
 already cut out — the rembg path is intentionally unsupported).
-Convert any RGBA PNG with this one-liner (Pillow cannot write PAM):
+Convert an RGBA PNG with ImageMagick and verify that the PAM header reports
+`DEPTH 4` and `TUPLTYPE RGB_ALPHA`:
 
 ```
-python3 -c "from PIL import Image; import sys; \
-im = Image.open(sys.argv[1]).convert('RGBA'); \
-f = open(sys.argv[2], 'wb'); \
-f.write(f'P7\nWIDTH {im.width}\nHEIGHT {im.height}\nDEPTH 4\nMAXVAL 255\nTUPLTYPE RGB_ALPHA\nENDHDR\n'.encode()); \
-f.write(im.tobytes())" input.png input.pam
+magick input.png -alpha on PAM:input.pam
 ```
 
 Then, from the repo root:
@@ -84,7 +86,8 @@ Then, from the repo root:
 TRELLIS2_GPU=1 TRELLIS2_GPU_F16=1 pixi run e2e -- input.pam \
     [--seed N] [--steps N] [--out prefix] [--no-tex] \
     [--pipeline 512|1024] \
-    [--remesh] [--remesh-res N] [--remesh-band B] [--remesh-project P]
+    [--remesh] [--remesh-res N] [--remesh-band B] [--remesh-project P] \
+    [--simplify-faces N]
 ```
 
 - Defaults: seed 42, 12 steps, prefix from the image name.
@@ -95,6 +98,10 @@ TRELLIS2_GPU=1 TRELLIS2_GPU_F16=1 pixi run e2e -- input.pam \
   repair, fragment removal, seam sewing, orientation unify) for the
   dual-contouring remesh — a guaranteed-watertight rebuild.
   `--remesh-res 256` is a good size/quality trade-off for viewing.
+- `--simplify-faces N` runs native QEM decimation after `--remesh`, while
+  the mesh is still in world coordinates and before PBR sampling/normals.
+  It targets at most `N` triangles without lowering the remesh grid; a
+  conflict-free collapse round may land slightly below the requested count.
 - Outputs: `<prefix>.obj` (raw mesh), `<prefix>_texvoxels.npz` (full
   per-voxel PBR payload) and `<prefix>.glb` (directly viewable:
   per-vertex base color + alpha in COLOR_0, trilinearly sampled from
@@ -109,7 +116,8 @@ run. Peak RSS ~11–12 GB (512) / ~18 GB (1024).
 Numeric variants (GPU, f16, flash attention) flip borderline
 thresholds, so compare runs structurally (bbox, nearest-neighbor
 distances), never exact V/F counts. Same seed + same settings is
-bit-reproducible end to end.
+bit-reproducible end to end with the native RNG. Seeds are not stream-compatible
+with releases that used an external framework's generator.
 
 ## License and acknowledgements
 
@@ -119,8 +127,7 @@ publication:
 
 - **[TRELLIS.2](https://github.com/microsoft/TRELLIS.2) by Microsoft
   Research** (MIT) — the original model and codebase. The port mirrors
-  its inference semantics op for op; the reference code is fetched by
-  `scripts/fetch_upstream.sh` for the parity tests, not vendored.
+  its inference semantics; its source and framework runtime are not vendored.
 - **[DINOv3](https://github.com/facebookresearch/dinov3) by Meta** —
   image conditioning. The pure-Mojo reimplementation mirrors the
   Hugging Face
@@ -138,8 +145,7 @@ publication:
   shipped).
 - **[trellis-mac](https://github.com/shivampkumar/trellis-mac) by
   @shivampkumar** (MIT) — the working MPS port used as the structural
-  A/B reference throughout, and the origin of the mac-compat patch set
-  and the vendored pure-torch mesh-extraction stub in `tests/parity/`.
+  A/B reference during the port.
 - **[@pedronaugusto](https://github.com/pedronaugusto)** — the
   mtlmesh / mtlbvh / mtldiffrast Metal ports (MIT) whose bundled
   CuMesh sources were the readable reference for the remeshing and

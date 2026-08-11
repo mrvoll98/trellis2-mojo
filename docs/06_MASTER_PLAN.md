@@ -5,6 +5,11 @@ grovfasene; dette dokumentet bryter dem ned i arbeidspakker (WP) med avhengighet
 konkrete filer, akseptkriterier og verifiseringsporter. Fremdrift per fil spores i
 [07_PORT_TRACKER.md](07_PORT_TRACKER.md).
 
+> **Arkivmerknad 2026-08-11:** Planen under beskriver den opprinnelige
+> hybrid-/paritetsfasen. Inferensstien er senere fullført som native Mojo, og
+> interop- og referanseharnessen er fjernet. Se README og
+> [PURE_MOJO_RUNTIME.md](PURE_MOJO_RUNTIME.md) for gjeldende løsning.
+
 ---
 
 ## 1. Omfang (fra ADR-ene)

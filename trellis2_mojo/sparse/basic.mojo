@@ -1,7 +1,7 @@
 # Mojo port of trellis2/modules/sparse/basic.py (VarLenTensor, SparseTensor).
 #
 # Design (per docs/decisions/0003 + docs/conversion/sparse_tensor_in_mojo.md):
-# - No torch. Feats/coords live in the minimal Tensor/IntMatrix from tensor.mojo.
+# - Feats/coords live in the minimal Tensor/IntMatrix from tensor.mojo.
 # - Python's List[slice] layout is represented as an offsets array of length
 #   B+1 (== cum_seqlen), which also replaces the seqlen/cum_seqlen caches.
 # - Python's _spatial_cache dict is shared by reference between tensors that

@@ -1,3 +1,4 @@
+from std.math import sqrt
 # Mojo port of trellis2/pipelines/samplers/flow_euler.py (+ the CFG and
 # guidance-interval mixins).
 #
@@ -8,13 +9,12 @@
 # FlowEulerSampler / FlowEulerCfgSampler / FlowEulerGuidanceIntervalSampler.
 #
 # The model is abstracted as the VelocityModel trait so the sampler runs
-# against native Mojo models as well as Python/torch models via interop
-# (py_model.mojo).
+# against native Mojo models through the VelocityModel trait.
 #
 # guidance_rescale (classifier_free_guidance_mixin.py's CFG rescale) IS
 # used by the real TRELLIS.2-4B pipeline.json (ss: 0.7, shape-slat: 0.5) and
-# is ported. Upstream has two std semantics, mirrored here: dense tensors
-# use torch .std() (unbiased, per dim-0 row over the remaining dims);
+# is ported. The source has two std semantics, mirrored here: dense tensors
+# use unbiased std per dim-0 row over the remaining dims;
 # VarLen/sparse state (seg_offsets given) uses VarLenTensor.std —
 # sqrt(mean(x^2) - mean(x)^2), biased, per segment over tokens x channels.
 #
@@ -83,7 +83,7 @@ struct FlowEulerSampler(Copyable, Movable):
     ) raises -> Tensor[F32]:
         """CFG rescale (classifier_free_guidance_mixin.py): match the cfg
         prediction's x0-std to the positive branch's, then blend and map
-        back to velocity space. Dense x_t (seg_offsets empty): torch .std —
+        back to velocity space. Dense x_t (seg_offsets empty): unbiased std —
         unbiased, one std per dim-0 row over the remaining dims. VarLen x_t
         (seg_offsets = token offsets): VarLenTensor.std —
         sqrt(mean(x^2) - mean(x)^2), biased, one std per segment."""
@@ -122,8 +122,8 @@ struct FlowEulerSampler(Copyable, Movable):
                     c2 += x0_cfg.data[e] * x0_cfg.data[e]
                 var mp = s1 / Float32(m)
                 var mc = c1 / Float32(m)
-                std_pos = (s2 / Float32(m) - mp * mp) ** 0.5
-                std_cfg = (c2 / Float32(m) - mc * mc) ** 0.5
+                std_pos = sqrt(s2 / Float32(m) - mp * mp)
+                std_cfg = sqrt(c2 / Float32(m) - mc * mc)
             else:
                 var s1: Float32 = 0
                 var c1: Float32 = 0
@@ -139,8 +139,8 @@ struct FlowEulerSampler(Copyable, Movable):
                     var dc = x0_cfg.data[e] - mc
                     vp += dp * dp
                     vc += dc * dc
-                std_pos = (vp / Float32(m - 1)) ** 0.5
-                std_cfg = (vc / Float32(m - 1)) ** 0.5
+                std_pos = sqrt(vp / Float32(m - 1))
+                std_cfg = sqrt(vc / Float32(m - 1))
             var ratio = std_pos / std_cfg
             for e in range(lo, hi):
                 var x0r = x0_cfg.data[e] * ratio
@@ -251,7 +251,7 @@ struct FlowEulerSampler(Copyable, Movable):
     ) raises -> SampleResult:
         """FlowEulerGuidanceIntervalSampler.sample. seg_offsets marks VarLen
         state (feats [T, C] + token offsets) so CFG rescale uses per-segment
-        VarLenTensor.std semantics instead of dense per-row torch .std."""
+        VarLenTensor.std semantics instead of dense per-row unbiased std."""
         return self._sample_impl(
             model,
             noise,

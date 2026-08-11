@@ -95,7 +95,7 @@ def check_case(
 
 
 def main() raises:
-    var gpu: Optional[GpuContext] = None
+    var gpu: Optional[GpuContext]
     try:
         gpu = GpuContext()
     except:

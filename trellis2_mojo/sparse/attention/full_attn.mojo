@@ -12,7 +12,7 @@
 #   dense:  qkv-packed / q + kv-packed / q, k, v
 # Not ported: dense-q + sparse-kv variants (unused by the models).
 
-from std.algorithm import parallelize
+from max.algorithm import parallelize
 from std.math import exp
 
 from trellis2_mojo.sparse.tensor import Tensor
@@ -37,7 +37,7 @@ def varlen_sdpa(
 ) raises -> Tensor[F32]:
     """Block-diagonal attention. q [Tq, H, Ci], k [Tkv, H, Ci],
     v [Tkv, H, Co] -> [Tq, H, Co]. Segment b of q attends to segment b of
-    k/v. Softmax uses max-subtraction (matches torch numerics).
+    k/v. Softmax uses stable max-subtraction.
 
     Hot loops are SIMD over the channel dim (WP10): qk as vectorized dot,
     av as per-key axpy into the out row. Work is parallelized over
@@ -116,10 +116,10 @@ def varlen_sdpa(
 
     @parameter
     def work(w: Int):
-        var seg = isp[w]
-        var head = ihp[w]
-        var kv_start = kop[seg]
-        var kv_len = kop[seg + 1] - kv_start
+        var seg = isp[unsafe_offset=w]
+        var head = ihp[unsafe_offset=w]
+        var kv_start = kop[unsafe_offset=seg]
+        var kv_len = kop[unsafe_offset=seg + 1] - kv_start
         if kv_len >= FLASH_KV:
             var hco_f = h * co
             # flash path (pass 8): online softmax over kv blocks of KB —
@@ -142,20 +142,20 @@ def varlen_sdpa(
             var mp = mrow.unsafe_ptr()
             var dp = denl.unsafe_ptr()
             var stp = stl.unsafe_ptr()
-            var fq0 = iq0p[w]
-            var fq_hi = iq1p[w]
+            var fq0 = iq0p[unsafe_offset=w]
+            var fq_hi = iq1p[unsafe_offset=w]
             while fq0 < fq_hi:
                 var tq = min(TQ, fq_hi - fq0)
                 for t in range(tq):
-                    mp[t] = Float32(-3.4e38)
-                    dp[t] = 0
+                    mp[unsafe_offset=t] = Float32(-3.4e38)
+                    dp[unsafe_offset=t] = 0
                 var zi = 0
                 var zv = SIMD[F32, W](0)
                 while zi + W <= tq * co:
-                    ap.store(zi, zv)
+                    ap.unsafe_store(zi, zv)
                     zi += W
                 while zi < tq * co:
-                    ap[zi] = 0
+                    ap[unsafe_offset=zi] = 0
                     zi += 1
                 var kj = 0
                 while kj < kv_len:
@@ -196,14 +196,14 @@ def varlen_sdpa(
                                 var a33 = SIMD[F32, W](0)
                                 var d = 0
                                 while d + W <= ci:
-                                    var kv0 = kp.load[width=W](k_base0 + d)
-                                    var kv1 = kp.load[width=W](k_base1 + d)
-                                    var kv2 = kp.load[width=W](k_base2 + d)
-                                    var kv3 = kp.load[width=W](k_base3 + d)
-                                    var qv0 = qp.load[width=W](q_base0 + d)
-                                    var qv1 = qp.load[width=W](q_base1 + d)
-                                    var qv2 = qp.load[width=W](q_base2 + d)
-                                    var qv3 = qp.load[width=W](q_base3 + d)
+                                    var kv0 = kp.unsafe_load[width=W](k_base0 + d)
+                                    var kv1 = kp.unsafe_load[width=W](k_base1 + d)
+                                    var kv2 = kp.unsafe_load[width=W](k_base2 + d)
+                                    var kv3 = kp.unsafe_load[width=W](k_base3 + d)
+                                    var qv0 = qp.unsafe_load[width=W](q_base0 + d)
+                                    var qv1 = qp.unsafe_load[width=W](q_base1 + d)
+                                    var qv2 = qp.unsafe_load[width=W](q_base2 + d)
+                                    var qv3 = qp.unsafe_load[width=W](q_base3 + d)
                                     a00 += qv0 * kv0
                                     a01 += qv0 * kv1
                                     a02 += qv0 * kv2
@@ -238,44 +238,44 @@ def varlen_sdpa(
                                 var s32 = a32.reduce_add()
                                 var s33 = a33.reduce_add()
                                 while d < ci:
-                                    var k0d = kp[k_base0 + d]
-                                    var k1d = kp[k_base1 + d]
-                                    var k2d = kp[k_base2 + d]
-                                    var k3d = kp[k_base3 + d]
-                                    s00 += qp[q_base0 + d] * k0d
-                                    s01 += qp[q_base0 + d] * k1d
-                                    s02 += qp[q_base0 + d] * k2d
-                                    s03 += qp[q_base0 + d] * k3d
-                                    s10 += qp[q_base1 + d] * k0d
-                                    s11 += qp[q_base1 + d] * k1d
-                                    s12 += qp[q_base1 + d] * k2d
-                                    s13 += qp[q_base1 + d] * k3d
-                                    s20 += qp[q_base2 + d] * k0d
-                                    s21 += qp[q_base2 + d] * k1d
-                                    s22 += qp[q_base2 + d] * k2d
-                                    s23 += qp[q_base2 + d] * k3d
-                                    s30 += qp[q_base3 + d] * k0d
-                                    s31 += qp[q_base3 + d] * k1d
-                                    s32 += qp[q_base3 + d] * k2d
-                                    s33 += qp[q_base3 + d] * k3d
+                                    var k0d = kp[unsafe_offset=k_base0 + d]
+                                    var k1d = kp[unsafe_offset=k_base1 + d]
+                                    var k2d = kp[unsafe_offset=k_base2 + d]
+                                    var k3d = kp[unsafe_offset=k_base3 + d]
+                                    s00 += qp[unsafe_offset=q_base0 + d] * k0d
+                                    s01 += qp[unsafe_offset=q_base0 + d] * k1d
+                                    s02 += qp[unsafe_offset=q_base0 + d] * k2d
+                                    s03 += qp[unsafe_offset=q_base0 + d] * k3d
+                                    s10 += qp[unsafe_offset=q_base1 + d] * k0d
+                                    s11 += qp[unsafe_offset=q_base1 + d] * k1d
+                                    s12 += qp[unsafe_offset=q_base1 + d] * k2d
+                                    s13 += qp[unsafe_offset=q_base1 + d] * k3d
+                                    s20 += qp[unsafe_offset=q_base2 + d] * k0d
+                                    s21 += qp[unsafe_offset=q_base2 + d] * k1d
+                                    s22 += qp[unsafe_offset=q_base2 + d] * k2d
+                                    s23 += qp[unsafe_offset=q_base2 + d] * k3d
+                                    s30 += qp[unsafe_offset=q_base3 + d] * k0d
+                                    s31 += qp[unsafe_offset=q_base3 + d] * k1d
+                                    s32 += qp[unsafe_offset=q_base3 + d] * k2d
+                                    s33 += qp[unsafe_offset=q_base3 + d] * k3d
                                     d += 1
                                 var sb0 = t * KB + kjj
-                                stp[sb0] = s00 * scale
-                                stp[sb0 + 1] = s01 * scale
-                                stp[sb0 + 2] = s02 * scale
-                                stp[sb0 + 3] = s03 * scale
-                                stp[sb0 + KB] = s10 * scale
-                                stp[sb0 + KB + 1] = s11 * scale
-                                stp[sb0 + KB + 2] = s12 * scale
-                                stp[sb0 + KB + 3] = s13 * scale
-                                stp[sb0 + 2 * KB] = s20 * scale
-                                stp[sb0 + 2 * KB + 1] = s21 * scale
-                                stp[sb0 + 2 * KB + 2] = s22 * scale
-                                stp[sb0 + 2 * KB + 3] = s23 * scale
-                                stp[sb0 + 3 * KB] = s30 * scale
-                                stp[sb0 + 3 * KB + 1] = s31 * scale
-                                stp[sb0 + 3 * KB + 2] = s32 * scale
-                                stp[sb0 + 3 * KB + 3] = s33 * scale
+                                stp[unsafe_offset=sb0] = s00 * scale
+                                stp[unsafe_offset=sb0 + 1] = s01 * scale
+                                stp[unsafe_offset=sb0 + 2] = s02 * scale
+                                stp[unsafe_offset=sb0 + 3] = s03 * scale
+                                stp[unsafe_offset=sb0 + KB] = s10 * scale
+                                stp[unsafe_offset=sb0 + KB + 1] = s11 * scale
+                                stp[unsafe_offset=sb0 + KB + 2] = s12 * scale
+                                stp[unsafe_offset=sb0 + KB + 3] = s13 * scale
+                                stp[unsafe_offset=sb0 + 2 * KB] = s20 * scale
+                                stp[unsafe_offset=sb0 + 2 * KB + 1] = s21 * scale
+                                stp[unsafe_offset=sb0 + 2 * KB + 2] = s22 * scale
+                                stp[unsafe_offset=sb0 + 2 * KB + 3] = s23 * scale
+                                stp[unsafe_offset=sb0 + 3 * KB] = s30 * scale
+                                stp[unsafe_offset=sb0 + 3 * KB + 1] = s31 * scale
+                                stp[unsafe_offset=sb0 + 3 * KB + 2] = s32 * scale
+                                stp[unsafe_offset=sb0 + 3 * KB + 3] = s33 * scale
                             else:
                                 for uu in range(ku):
                                     var k_base = k_base0 + uu * hci2
@@ -284,13 +284,13 @@ def varlen_sdpa(
                                         var accv = SIMD[F32, W](0)
                                         var d = 0
                                         while d + W <= ci:
-                                            accv += qp.load[width=W](q_base + d) * kp.load[width=W](k_base + d)
+                                            accv += qp.unsafe_load[width=W](q_base + d) * kp.unsafe_load[width=W](k_base + d)
                                             d += W
                                         var acc = accv.reduce_add()
                                         while d < ci:
-                                            acc += qp[q_base + d] * kp[k_base + d]
+                                            acc += qp[unsafe_offset=q_base + d] * kp[unsafe_offset=k_base + d]
                                             d += 1
-                                        stp[tt * KB + kjj + uu] = acc * scale
+                                        stp[unsafe_offset=tt * KB + kjj + uu] = acc * scale
                             t += tu
                         kjj += ku
                     # per row: block max -> rescale accumulator -> exp ->
@@ -302,41 +302,41 @@ def varlen_sdpa(
                         if kb >= W:
                             var bmv = SIMD[F32, W](-3.4e38)
                             while u + W <= kb:
-                                bmv = max(bmv, stp.load[width=W](sb + u))
+                                bmv = max(bmv, stp.unsafe_load[width=W](sb + u))
                                 u += W
                             bm = bmv.reduce_max()
                         while u < kb:
-                            if stp[sb + u] > bm:
-                                bm = stp[sb + u]
+                            if stp[unsafe_offset=sb + u] > bm:
+                                bm = stp[unsafe_offset=sb + u]
                             u += 1
-                        if bm > mp[t]:
-                            var r = exp(mp[t] - bm)
-                            dp[t] *= r
+                        if bm > mp[unsafe_offset=t]:
+                            var r = exp(mp[unsafe_offset=t] - bm)
+                            dp[unsafe_offset=t] *= r
                             var rv = SIMD[F32, W](r)
                             var ab = t * co
                             var d2 = 0
                             while d2 + W <= co:
-                                ap.store(ab + d2, ap.load[width=W](ab + d2) * rv)
+                                ap.unsafe_store(ab + d2, ap.unsafe_load[width=W](ab + d2) * rv)
                                 d2 += W
                             while d2 < co:
-                                ap[ab + d2] *= r
+                                ap[unsafe_offset=ab + d2] *= r
                                 d2 += 1
-                            mp[t] = bm
-                        var mv2 = SIMD[F32, W](mp[t])
+                            mp[unsafe_offset=t] = bm
+                        var mv2 = SIMD[F32, W](mp[unsafe_offset=t])
                         var sv2 = SIMD[F32, W](0)
                         u = 0
                         while u + W <= kb:
-                            var e = exp(stp.load[width=W](sb + u) - mv2)
-                            stp.store(sb + u, e)
+                            var e = exp(stp.unsafe_load[width=W](sb + u) - mv2)
+                            stp.unsafe_store(sb + u, e)
                             sv2 += e
                             u += W
                         var dsum = sv2.reduce_add()
                         while u < kb:
-                            var e = exp(stp[sb + u] - mp[t])
-                            stp[sb + u] = e
+                            var e = exp(stp[unsafe_offset=sb + u] - mp[unsafe_offset=t])
+                            stp[unsafe_offset=sb + u] = e
                             dsum += e
                             u += 1
-                        dp[t] += dsum
+                        dp[unsafe_offset=t] += dsum
                     # av: acc rows held in registers across the block's
                     # keys (the v block is ~32 KB and stays in L1 across
                     # the tq rows); 2 q rows per block share every v load
@@ -350,34 +350,34 @@ def varlen_sdpa(
                             var sb2b = (tp + 1) * KB
                             var aba = tp * co
                             var abb = (tp + 1) * co
-                            var c0 = ap.load[width=W](aba)
-                            var c1 = ap.load[width=W](aba + W)
-                            var c2 = ap.load[width=W](aba + 2 * W)
-                            var c3 = ap.load[width=W](aba + 3 * W)
-                            var c4 = ap.load[width=W](aba + 4 * W)
-                            var c5 = ap.load[width=W](aba + 5 * W)
-                            var c6 = ap.load[width=W](aba + 6 * W)
-                            var c7 = ap.load[width=W](aba + 7 * W)
-                            var e0 = ap.load[width=W](abb)
-                            var e1 = ap.load[width=W](abb + W)
-                            var e2 = ap.load[width=W](abb + 2 * W)
-                            var e3 = ap.load[width=W](abb + 3 * W)
-                            var e4 = ap.load[width=W](abb + 4 * W)
-                            var e5 = ap.load[width=W](abb + 5 * W)
-                            var e6 = ap.load[width=W](abb + 6 * W)
-                            var e7 = ap.load[width=W](abb + 7 * W)
+                            var c0 = ap.unsafe_load[width=W](aba)
+                            var c1 = ap.unsafe_load[width=W](aba + W)
+                            var c2 = ap.unsafe_load[width=W](aba + 2 * W)
+                            var c3 = ap.unsafe_load[width=W](aba + 3 * W)
+                            var c4 = ap.unsafe_load[width=W](aba + 4 * W)
+                            var c5 = ap.unsafe_load[width=W](aba + 5 * W)
+                            var c6 = ap.unsafe_load[width=W](aba + 6 * W)
+                            var c7 = ap.unsafe_load[width=W](aba + 7 * W)
+                            var e0 = ap.unsafe_load[width=W](abb)
+                            var e1 = ap.unsafe_load[width=W](abb + W)
+                            var e2 = ap.unsafe_load[width=W](abb + 2 * W)
+                            var e3 = ap.unsafe_load[width=W](abb + 3 * W)
+                            var e4 = ap.unsafe_load[width=W](abb + 4 * W)
+                            var e5 = ap.unsafe_load[width=W](abb + 5 * W)
+                            var e6 = ap.unsafe_load[width=W](abb + 6 * W)
+                            var e7 = ap.unsafe_load[width=W](abb + 7 * W)
                             for u in range(kb):
-                                var sa = SIMD[F32, W](stp[sb2a + u])
-                                var sb3 = SIMD[F32, W](stp[sb2b + u])
+                                var sa = SIMD[F32, W](stp[unsafe_offset=sb2a + u])
+                                var sb3 = SIMD[F32, W](stp[unsafe_offset=sb2b + u])
                                 var vb = v_base00 + u * hco_f
-                                var v0 = vp.load[width=W](vb)
-                                var v1 = vp.load[width=W](vb + W)
-                                var v2 = vp.load[width=W](vb + 2 * W)
-                                var v3 = vp.load[width=W](vb + 3 * W)
-                                var v4 = vp.load[width=W](vb + 4 * W)
-                                var v5 = vp.load[width=W](vb + 5 * W)
-                                var v6 = vp.load[width=W](vb + 6 * W)
-                                var v7 = vp.load[width=W](vb + 7 * W)
+                                var v0 = vp.unsafe_load[width=W](vb)
+                                var v1 = vp.unsafe_load[width=W](vb + W)
+                                var v2 = vp.unsafe_load[width=W](vb + 2 * W)
+                                var v3 = vp.unsafe_load[width=W](vb + 3 * W)
+                                var v4 = vp.unsafe_load[width=W](vb + 4 * W)
+                                var v5 = vp.unsafe_load[width=W](vb + 5 * W)
+                                var v6 = vp.unsafe_load[width=W](vb + 6 * W)
+                                var v7 = vp.unsafe_load[width=W](vb + 7 * W)
                                 c0 += v0 * sa
                                 c1 += v1 * sa
                                 c2 += v2 * sa
@@ -394,22 +394,22 @@ def varlen_sdpa(
                                 e5 += v5 * sb3
                                 e6 += v6 * sb3
                                 e7 += v7 * sb3
-                            ap.store(aba, c0)
-                            ap.store(aba + W, c1)
-                            ap.store(aba + 2 * W, c2)
-                            ap.store(aba + 3 * W, c3)
-                            ap.store(aba + 4 * W, c4)
-                            ap.store(aba + 5 * W, c5)
-                            ap.store(aba + 6 * W, c6)
-                            ap.store(aba + 7 * W, c7)
-                            ap.store(abb, e0)
-                            ap.store(abb + W, e1)
-                            ap.store(abb + 2 * W, e2)
-                            ap.store(abb + 3 * W, e3)
-                            ap.store(abb + 4 * W, e4)
-                            ap.store(abb + 5 * W, e5)
-                            ap.store(abb + 6 * W, e6)
-                            ap.store(abb + 7 * W, e7)
+                            ap.unsafe_store(aba, c0)
+                            ap.unsafe_store(aba + W, c1)
+                            ap.unsafe_store(aba + 2 * W, c2)
+                            ap.unsafe_store(aba + 3 * W, c3)
+                            ap.unsafe_store(aba + 4 * W, c4)
+                            ap.unsafe_store(aba + 5 * W, c5)
+                            ap.unsafe_store(aba + 6 * W, c6)
+                            ap.unsafe_store(aba + 7 * W, c7)
+                            ap.unsafe_store(abb, e0)
+                            ap.unsafe_store(abb + W, e1)
+                            ap.unsafe_store(abb + 2 * W, e2)
+                            ap.unsafe_store(abb + 3 * W, e3)
+                            ap.unsafe_store(abb + 4 * W, e4)
+                            ap.unsafe_store(abb + 5 * W, e5)
+                            ap.unsafe_store(abb + 6 * W, e6)
+                            ap.unsafe_store(abb + 7 * W, e7)
                             tp += 2
                         else:
                             break
@@ -420,59 +420,59 @@ def varlen_sdpa(
                         var v_base0 = v_base00
                         var d3 = 0
                         while d3 + 8 * W <= co:
-                            var b0 = ap.load[width=W](ab + d3)
-                            var b1 = ap.load[width=W](ab + d3 + W)
-                            var b2 = ap.load[width=W](ab + d3 + 2 * W)
-                            var b3 = ap.load[width=W](ab + d3 + 3 * W)
-                            var b4 = ap.load[width=W](ab + d3 + 4 * W)
-                            var b5 = ap.load[width=W](ab + d3 + 5 * W)
-                            var b6 = ap.load[width=W](ab + d3 + 6 * W)
-                            var b7 = ap.load[width=W](ab + d3 + 7 * W)
+                            var b0 = ap.unsafe_load[width=W](ab + d3)
+                            var b1 = ap.unsafe_load[width=W](ab + d3 + W)
+                            var b2 = ap.unsafe_load[width=W](ab + d3 + 2 * W)
+                            var b3 = ap.unsafe_load[width=W](ab + d3 + 3 * W)
+                            var b4 = ap.unsafe_load[width=W](ab + d3 + 4 * W)
+                            var b5 = ap.unsafe_load[width=W](ab + d3 + 5 * W)
+                            var b6 = ap.unsafe_load[width=W](ab + d3 + 6 * W)
+                            var b7 = ap.unsafe_load[width=W](ab + d3 + 7 * W)
                             for u in range(kb):
-                                var sv = SIMD[F32, W](stp[sb2 + u])
+                                var sv = SIMD[F32, W](stp[unsafe_offset=sb2 + u])
                                 var vb = v_base0 + u * hco_f + d3
-                                b0 += vp.load[width=W](vb) * sv
-                                b1 += vp.load[width=W](vb + W) * sv
-                                b2 += vp.load[width=W](vb + 2 * W) * sv
-                                b3 += vp.load[width=W](vb + 3 * W) * sv
-                                b4 += vp.load[width=W](vb + 4 * W) * sv
-                                b5 += vp.load[width=W](vb + 5 * W) * sv
-                                b6 += vp.load[width=W](vb + 6 * W) * sv
-                                b7 += vp.load[width=W](vb + 7 * W) * sv
-                            ap.store(ab + d3, b0)
-                            ap.store(ab + d3 + W, b1)
-                            ap.store(ab + d3 + 2 * W, b2)
-                            ap.store(ab + d3 + 3 * W, b3)
-                            ap.store(ab + d3 + 4 * W, b4)
-                            ap.store(ab + d3 + 5 * W, b5)
-                            ap.store(ab + d3 + 6 * W, b6)
-                            ap.store(ab + d3 + 7 * W, b7)
+                                b0 += vp.unsafe_load[width=W](vb) * sv
+                                b1 += vp.unsafe_load[width=W](vb + W) * sv
+                                b2 += vp.unsafe_load[width=W](vb + 2 * W) * sv
+                                b3 += vp.unsafe_load[width=W](vb + 3 * W) * sv
+                                b4 += vp.unsafe_load[width=W](vb + 4 * W) * sv
+                                b5 += vp.unsafe_load[width=W](vb + 5 * W) * sv
+                                b6 += vp.unsafe_load[width=W](vb + 6 * W) * sv
+                                b7 += vp.unsafe_load[width=W](vb + 7 * W) * sv
+                            ap.unsafe_store(ab + d3, b0)
+                            ap.unsafe_store(ab + d3 + W, b1)
+                            ap.unsafe_store(ab + d3 + 2 * W, b2)
+                            ap.unsafe_store(ab + d3 + 3 * W, b3)
+                            ap.unsafe_store(ab + d3 + 4 * W, b4)
+                            ap.unsafe_store(ab + d3 + 5 * W, b5)
+                            ap.unsafe_store(ab + d3 + 6 * W, b6)
+                            ap.unsafe_store(ab + d3 + 7 * W, b7)
                             d3 += 8 * W
                         while d3 + W <= co:
-                            var b0 = ap.load[width=W](ab + d3)
+                            var b0 = ap.unsafe_load[width=W](ab + d3)
                             for u in range(kb):
                                 var vb = v_base0 + u * hco_f + d3
-                                b0 += vp.load[width=W](vb) * SIMD[F32, W](stp[sb2 + u])
-                            ap.store(ab + d3, b0)
+                                b0 += vp.unsafe_load[width=W](vb) * SIMD[F32, W](stp[unsafe_offset=sb2 + u])
+                            ap.unsafe_store(ab + d3, b0)
                             d3 += W
                         while d3 < co:
-                            var acc2: Float32 = ap[ab + d3]
+                            var acc2: Float32 = ap[unsafe_offset=ab + d3]
                             for u in range(kb):
-                                acc2 += vp[v_base0 + u * hco_f + d3] * stp[sb2 + u]
-                            ap[ab + d3] = acc2
+                                acc2 += vp[unsafe_offset=v_base0 + u * hco_f + d3] * stp[unsafe_offset=sb2 + u]
+                            ap[unsafe_offset=ab + d3] = acc2
                             d3 += 1
                         tp += 1
                     kj += kb
                 for t in range(tq):
                     var o_base = ((fq0 + t) * h + head) * co
                     var ab = t * co
-                    var dv = SIMD[F32, W](dp[t])
+                    var dv = SIMD[F32, W](dp[unsafe_offset=t])
                     var d4 = 0
                     while d4 + W <= co:
-                        op.store(o_base + d4, ap.load[width=W](ab + d4) / dv)
+                        op.unsafe_store(o_base + d4, ap.unsafe_load[width=W](ab + d4) / dv)
                         d4 += W
                     while d4 < co:
-                        op[o_base + d4] = ap[ab + d4] / dp[t]
+                        op[unsafe_offset=o_base + d4] = ap[unsafe_offset=ab + d4] / dp[unsafe_offset=t]
                         d4 += 1
                 fq0 += tq
             return
@@ -487,8 +487,8 @@ def varlen_sdpa(
         var sp = scores.unsafe_ptr()
         var dnp = denoms.unsafe_ptr()
         var sbase0 = 0
-        var q_hi = iq1p[w]
-        var q0 = iq0p[w]
+        var q_hi = iq1p[unsafe_offset=w]
+        var q0 = iq0p[unsafe_offset=w]
         var hci = h * ci
         var hco = h * co
         while q0 < q_hi:
@@ -533,14 +533,14 @@ def varlen_sdpa(
                         var a33 = SIMD[F32, W](0)
                         var d = 0
                         while d + W <= ci:
-                            var kv0 = kp.load[width=W](k_base0 + d)
-                            var kv1 = kp.load[width=W](k_base1 + d)
-                            var kv2 = kp.load[width=W](k_base2 + d)
-                            var kv3 = kp.load[width=W](k_base3 + d)
-                            var qv0 = qp.load[width=W](q_base0 + d)
-                            var qv1 = qp.load[width=W](q_base1 + d)
-                            var qv2 = qp.load[width=W](q_base2 + d)
-                            var qv3 = qp.load[width=W](q_base3 + d)
+                            var kv0 = kp.unsafe_load[width=W](k_base0 + d)
+                            var kv1 = kp.unsafe_load[width=W](k_base1 + d)
+                            var kv2 = kp.unsafe_load[width=W](k_base2 + d)
+                            var kv3 = kp.unsafe_load[width=W](k_base3 + d)
+                            var qv0 = qp.unsafe_load[width=W](q_base0 + d)
+                            var qv1 = qp.unsafe_load[width=W](q_base1 + d)
+                            var qv2 = qp.unsafe_load[width=W](q_base2 + d)
+                            var qv3 = qp.unsafe_load[width=W](q_base3 + d)
                             a00 += qv0 * kv0
                             a01 += qv0 * kv1
                             a02 += qv0 * kv2
@@ -575,44 +575,44 @@ def varlen_sdpa(
                         var s32 = a32.reduce_add()
                         var s33 = a33.reduce_add()
                         while d < ci:
-                            var k0d = kp[k_base0 + d]
-                            var k1d = kp[k_base1 + d]
-                            var k2d = kp[k_base2 + d]
-                            var k3d = kp[k_base3 + d]
-                            s00 += qp[q_base0 + d] * k0d
-                            s01 += qp[q_base0 + d] * k1d
-                            s02 += qp[q_base0 + d] * k2d
-                            s03 += qp[q_base0 + d] * k3d
-                            s10 += qp[q_base1 + d] * k0d
-                            s11 += qp[q_base1 + d] * k1d
-                            s12 += qp[q_base1 + d] * k2d
-                            s13 += qp[q_base1 + d] * k3d
-                            s20 += qp[q_base2 + d] * k0d
-                            s21 += qp[q_base2 + d] * k1d
-                            s22 += qp[q_base2 + d] * k2d
-                            s23 += qp[q_base2 + d] * k3d
-                            s30 += qp[q_base3 + d] * k0d
-                            s31 += qp[q_base3 + d] * k1d
-                            s32 += qp[q_base3 + d] * k2d
-                            s33 += qp[q_base3 + d] * k3d
+                            var k0d = kp[unsafe_offset=k_base0 + d]
+                            var k1d = kp[unsafe_offset=k_base1 + d]
+                            var k2d = kp[unsafe_offset=k_base2 + d]
+                            var k3d = kp[unsafe_offset=k_base3 + d]
+                            s00 += qp[unsafe_offset=q_base0 + d] * k0d
+                            s01 += qp[unsafe_offset=q_base0 + d] * k1d
+                            s02 += qp[unsafe_offset=q_base0 + d] * k2d
+                            s03 += qp[unsafe_offset=q_base0 + d] * k3d
+                            s10 += qp[unsafe_offset=q_base1 + d] * k0d
+                            s11 += qp[unsafe_offset=q_base1 + d] * k1d
+                            s12 += qp[unsafe_offset=q_base1 + d] * k2d
+                            s13 += qp[unsafe_offset=q_base1 + d] * k3d
+                            s20 += qp[unsafe_offset=q_base2 + d] * k0d
+                            s21 += qp[unsafe_offset=q_base2 + d] * k1d
+                            s22 += qp[unsafe_offset=q_base2 + d] * k2d
+                            s23 += qp[unsafe_offset=q_base2 + d] * k3d
+                            s30 += qp[unsafe_offset=q_base3 + d] * k0d
+                            s31 += qp[unsafe_offset=q_base3 + d] * k1d
+                            s32 += qp[unsafe_offset=q_base3 + d] * k2d
+                            s33 += qp[unsafe_offset=q_base3 + d] * k3d
                             d += 1
                         var sb0 = sbase0 + t * kv_len + kj
-                        sp[sb0] = s00 * scale
-                        sp[sb0 + 1] = s01 * scale
-                        sp[sb0 + 2] = s02 * scale
-                        sp[sb0 + 3] = s03 * scale
-                        sp[sb0 + kv_len] = s10 * scale
-                        sp[sb0 + kv_len + 1] = s11 * scale
-                        sp[sb0 + kv_len + 2] = s12 * scale
-                        sp[sb0 + kv_len + 3] = s13 * scale
-                        sp[sb0 + 2 * kv_len] = s20 * scale
-                        sp[sb0 + 2 * kv_len + 1] = s21 * scale
-                        sp[sb0 + 2 * kv_len + 2] = s22 * scale
-                        sp[sb0 + 2 * kv_len + 3] = s23 * scale
-                        sp[sb0 + 3 * kv_len] = s30 * scale
-                        sp[sb0 + 3 * kv_len + 1] = s31 * scale
-                        sp[sb0 + 3 * kv_len + 2] = s32 * scale
-                        sp[sb0 + 3 * kv_len + 3] = s33 * scale
+                        sp[unsafe_offset=sb0] = s00 * scale
+                        sp[unsafe_offset=sb0 + 1] = s01 * scale
+                        sp[unsafe_offset=sb0 + 2] = s02 * scale
+                        sp[unsafe_offset=sb0 + 3] = s03 * scale
+                        sp[unsafe_offset=sb0 + kv_len] = s10 * scale
+                        sp[unsafe_offset=sb0 + kv_len + 1] = s11 * scale
+                        sp[unsafe_offset=sb0 + kv_len + 2] = s12 * scale
+                        sp[unsafe_offset=sb0 + kv_len + 3] = s13 * scale
+                        sp[unsafe_offset=sb0 + 2 * kv_len] = s20 * scale
+                        sp[unsafe_offset=sb0 + 2 * kv_len + 1] = s21 * scale
+                        sp[unsafe_offset=sb0 + 2 * kv_len + 2] = s22 * scale
+                        sp[unsafe_offset=sb0 + 2 * kv_len + 3] = s23 * scale
+                        sp[unsafe_offset=sb0 + 3 * kv_len] = s30 * scale
+                        sp[unsafe_offset=sb0 + 3 * kv_len + 1] = s31 * scale
+                        sp[unsafe_offset=sb0 + 3 * kv_len + 2] = s32 * scale
+                        sp[unsafe_offset=sb0 + 3 * kv_len + 3] = s33 * scale
                     else:
                         for u in range(ku):
                             var k_base = k_base0 + u * hci
@@ -621,16 +621,16 @@ def varlen_sdpa(
                                 var accv = SIMD[F32, W](0)
                                 var d = 0
                                 while d + W <= ci:
-                                    accv += qp.load[width=W](q_base + d) * kp.load[width=W](k_base + d)
+                                    accv += qp.unsafe_load[width=W](q_base + d) * kp.unsafe_load[width=W](k_base + d)
                                     d += W
                                 var acc = accv.reduce_add()
                                 while d < ci:
-                                    acc += qp[q_base + d] * kp[k_base + d]
+                                    acc += qp[unsafe_offset=q_base + d] * kp[unsafe_offset=k_base + d]
                                     d += 1
-                                sp[sbase0 + tt * kv_len + kj + u] = acc * scale
+                                sp[unsafe_offset=sbase0 + tt * kv_len + kj + u] = acc * scale
                     t += tu
                 kj += ku
-            # softmax per row (same max-subtraction as torch). SIMD (pass
+            # softmax per row with stable max-subtraction. SIMD (pass
             # 8): max via lane-max + reduce_max (order-free -> exact), exp
             # W lanes at a time (the vector exp matches the scalar exp
             # element-for-element — same activation-kernel precedent), and
@@ -644,30 +644,30 @@ def varlen_sdpa(
                 if kv_len >= W:
                     var mv = SIMD[F32, W](-3.4e38)
                     while kj3 + W <= kv_len:
-                        mv = max(mv, sp.load[width=W](sb + kj3))
+                        mv = max(mv, sp.unsafe_load[width=W](sb + kj3))
                         kj3 += W
                     m = mv.reduce_max()
                 while kj3 < kv_len:
-                    if sp[sb + kj3] > m:
-                        m = sp[sb + kj3]
+                    if sp[unsafe_offset=sb + kj3] > m:
+                        m = sp[unsafe_offset=sb + kj3]
                     kj3 += 1
                 kj3 = 0
                 while kj3 + W <= kv_len:
-                    sp.store(sb + kj3, exp(sp.load[width=W](sb + kj3) - m))
+                    sp.unsafe_store(sb + kj3, exp(sp.unsafe_load[width=W](sb + kj3) - m))
                     kj3 += W
                 while kj3 < kv_len:
-                    sp[sb + kj3] = exp(sp[sb + kj3] - m)
+                    sp[unsafe_offset=sb + kj3] = exp(sp[unsafe_offset=sb + kj3] - m)
                     kj3 += 1
                 var denom: Float32 = 0
                 for kj4 in range(kv_len):
-                    denom += sp[sb + kj4]
-                dnp[t] = denom
+                    denom += sp[unsafe_offset=sb + kj4]
+                dnp[unsafe_offset=t] = denom
             # av: each out row is accumulated in registers across all keys
             # (same per-lane add order over kj as the axpy formulation) and
             # the denominator division is fused into the store
             for t in range(tq):
                 var sb = sbase0 + t * kv_len
-                var denom = dnp[t]
+                var denom = dnp[unsafe_offset=t]
                 var o_base = ((q0 + t) * h + head) * co
                 var v_base0 = (kv_start * h + head) * co
                 var d = 0
@@ -681,25 +681,25 @@ def varlen_sdpa(
                     var b6 = SIMD[F32, W](0)
                     var b7 = SIMD[F32, W](0)
                     for kj2 in range(kv_len):
-                        var sv = SIMD[F32, W](sp[sb + kj2])
+                        var sv = SIMD[F32, W](sp[unsafe_offset=sb + kj2])
                         var vb = v_base0 + kj2 * hco + d
-                        b0 += vp.load[width=W](vb) * sv
-                        b1 += vp.load[width=W](vb + W) * sv
-                        b2 += vp.load[width=W](vb + 2 * W) * sv
-                        b3 += vp.load[width=W](vb + 3 * W) * sv
-                        b4 += vp.load[width=W](vb + 4 * W) * sv
-                        b5 += vp.load[width=W](vb + 5 * W) * sv
-                        b6 += vp.load[width=W](vb + 6 * W) * sv
-                        b7 += vp.load[width=W](vb + 7 * W) * sv
+                        b0 += vp.unsafe_load[width=W](vb) * sv
+                        b1 += vp.unsafe_load[width=W](vb + W) * sv
+                        b2 += vp.unsafe_load[width=W](vb + 2 * W) * sv
+                        b3 += vp.unsafe_load[width=W](vb + 3 * W) * sv
+                        b4 += vp.unsafe_load[width=W](vb + 4 * W) * sv
+                        b5 += vp.unsafe_load[width=W](vb + 5 * W) * sv
+                        b6 += vp.unsafe_load[width=W](vb + 6 * W) * sv
+                        b7 += vp.unsafe_load[width=W](vb + 7 * W) * sv
                     var dv = SIMD[F32, W](denom)
-                    op.store(o_base + d, b0 / dv)
-                    op.store(o_base + d + W, b1 / dv)
-                    op.store(o_base + d + 2 * W, b2 / dv)
-                    op.store(o_base + d + 3 * W, b3 / dv)
-                    op.store(o_base + d + 4 * W, b4 / dv)
-                    op.store(o_base + d + 5 * W, b5 / dv)
-                    op.store(o_base + d + 6 * W, b6 / dv)
-                    op.store(o_base + d + 7 * W, b7 / dv)
+                    op.unsafe_store(o_base + d, b0 / dv)
+                    op.unsafe_store(o_base + d + W, b1 / dv)
+                    op.unsafe_store(o_base + d + 2 * W, b2 / dv)
+                    op.unsafe_store(o_base + d + 3 * W, b3 / dv)
+                    op.unsafe_store(o_base + d + 4 * W, b4 / dv)
+                    op.unsafe_store(o_base + d + 5 * W, b5 / dv)
+                    op.unsafe_store(o_base + d + 6 * W, b6 / dv)
+                    op.unsafe_store(o_base + d + 7 * W, b7 / dv)
                     d += 8 * W
                 while d + 4 * W <= co:
                     var b0 = SIMD[F32, W](0)
@@ -707,30 +707,30 @@ def varlen_sdpa(
                     var b2 = SIMD[F32, W](0)
                     var b3 = SIMD[F32, W](0)
                     for kj2 in range(kv_len):
-                        var sv = SIMD[F32, W](sp[sb + kj2])
+                        var sv = SIMD[F32, W](sp[unsafe_offset=sb + kj2])
                         var vb = v_base0 + kj2 * hco + d
-                        b0 += vp.load[width=W](vb) * sv
-                        b1 += vp.load[width=W](vb + W) * sv
-                        b2 += vp.load[width=W](vb + 2 * W) * sv
-                        b3 += vp.load[width=W](vb + 3 * W) * sv
+                        b0 += vp.unsafe_load[width=W](vb) * sv
+                        b1 += vp.unsafe_load[width=W](vb + W) * sv
+                        b2 += vp.unsafe_load[width=W](vb + 2 * W) * sv
+                        b3 += vp.unsafe_load[width=W](vb + 3 * W) * sv
                     var dv = SIMD[F32, W](denom)
-                    op.store(o_base + d, b0 / dv)
-                    op.store(o_base + d + W, b1 / dv)
-                    op.store(o_base + d + 2 * W, b2 / dv)
-                    op.store(o_base + d + 3 * W, b3 / dv)
+                    op.unsafe_store(o_base + d, b0 / dv)
+                    op.unsafe_store(o_base + d + W, b1 / dv)
+                    op.unsafe_store(o_base + d + 2 * W, b2 / dv)
+                    op.unsafe_store(o_base + d + 3 * W, b3 / dv)
                     d += 4 * W
                 while d + W <= co:
                     var b0 = SIMD[F32, W](0)
                     for kj2 in range(kv_len):
                         var vb = v_base0 + kj2 * hco + d
-                        b0 += vp.load[width=W](vb) * SIMD[F32, W](sp[sb + kj2])
-                    op.store(o_base + d, b0 / SIMD[F32, W](denom))
+                        b0 += vp.unsafe_load[width=W](vb) * SIMD[F32, W](sp[unsafe_offset=sb + kj2])
+                    op.unsafe_store(o_base + d, b0 / SIMD[F32, W](denom))
                     d += W
                 while d < co:
                     var acc: Float32 = 0
                     for kj2 in range(kv_len):
-                        acc += vp[v_base0 + kj2 * hco + d] * sp[sb + kj2]
-                    op[o_base + d] = acc / denom
+                        acc += vp[unsafe_offset=v_base0 + kj2 * hco + d] * sp[unsafe_offset=sb + kj2]
+                    op[unsafe_offset=o_base + d] = acc / denom
                     d += 1
             q0 += tq
 

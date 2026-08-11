@@ -12,7 +12,7 @@
 # flops-proxy threshold. This kernel is the SS-VAE decoder's entire cost:
 # naive it ran at ~2 GF/s single-threaded and dominated the e2e ss stage.
 
-from std.algorithm import parallelize
+from max.algorithm import parallelize
 
 from trellis2_mojo.sparse.tensor import Tensor
 
@@ -88,10 +88,10 @@ struct Conv3d(Copyable, Movable):
                         vec_start = zd_lo
                         var zd = zd_lo
                         while zd + W <= zd_hi:
-                            var a0 = SIMD[F32, W](bp[o0])
-                            var a1 = SIMD[F32, W](bp[o0 + 1])
-                            var a2 = SIMD[F32, W](bp[o0 + 2])
-                            var a3 = SIMD[F32, W](bp[o0 + 3])
+                            var a0 = SIMD[F32, W](bp[unsafe_offset=o0])
+                            var a1 = SIMD[F32, W](bp[unsafe_offset=o0 + 1])
+                            var a2 = SIMD[F32, W](bp[unsafe_offset=o0 + 2])
+                            var a3 = SIMD[F32, W](bp[unsafe_offset=o0 + 3])
                             for c in range(ci):
                                 for kh in range(k):
                                     var ih = zh - p + kh
@@ -105,21 +105,21 @@ struct Conv3d(Copyable, Movable):
                                         var w_base = (((o0 * ci + c) * k + kh) * k + kw) * k
                                         var w_step = ci * k * k * k
                                         for kd in range(k):
-                                            var xv = xp.load[width=W](x_base + kd)
-                                            a0 += SIMD[F32, W](wp[w_base + kd]) * xv
-                                            a1 += SIMD[F32, W](wp[w_base + w_step + kd]) * xv
-                                            a2 += SIMD[F32, W](wp[w_base + 2 * w_step + kd]) * xv
-                                            a3 += SIMD[F32, W](wp[w_base + 3 * w_step + kd]) * xv
-                            op.store(o_base + zd, a0)
-                            op.store(o_base + o_stride + zd, a1)
-                            op.store(o_base + 2 * o_stride + zd, a2)
-                            op.store(o_base + 3 * o_stride + zd, a3)
+                                            var xv = xp.unsafe_load[width=W](x_base + kd)
+                                            a0 += SIMD[F32, W](wp[unsafe_offset=w_base + kd]) * xv
+                                            a1 += SIMD[F32, W](wp[unsafe_offset=w_base + w_step + kd]) * xv
+                                            a2 += SIMD[F32, W](wp[unsafe_offset=w_base + 2 * w_step + kd]) * xv
+                                            a3 += SIMD[F32, W](wp[unsafe_offset=w_base + 3 * w_step + kd]) * xv
+                            op.unsafe_store(o_base + zd, a0)
+                            op.unsafe_store(o_base + o_stride + zd, a1)
+                            op.unsafe_store(o_base + 2 * o_stride + zd, a2)
+                            op.unsafe_store(o_base + 3 * o_stride + zd, a3)
                             zd += W
                         if zd + 4 <= zd_hi:
-                            var a0 = SIMD[F32, 4](bp[o0])
-                            var a1 = SIMD[F32, 4](bp[o0 + 1])
-                            var a2 = SIMD[F32, 4](bp[o0 + 2])
-                            var a3 = SIMD[F32, 4](bp[o0 + 3])
+                            var a0 = SIMD[F32, 4](bp[unsafe_offset=o0])
+                            var a1 = SIMD[F32, 4](bp[unsafe_offset=o0 + 1])
+                            var a2 = SIMD[F32, 4](bp[unsafe_offset=o0 + 2])
+                            var a3 = SIMD[F32, 4](bp[unsafe_offset=o0 + 3])
                             for c in range(ci):
                                 for kh in range(k):
                                     var ih = zh - p + kh
@@ -133,15 +133,15 @@ struct Conv3d(Copyable, Movable):
                                         var w_base = (((o0 * ci + c) * k + kh) * k + kw) * k
                                         var w_step = ci * k * k * k
                                         for kd in range(k):
-                                            var xv = xp.load[width=4](x_base + kd)
-                                            a0 += SIMD[F32, 4](wp[w_base + kd]) * xv
-                                            a1 += SIMD[F32, 4](wp[w_base + w_step + kd]) * xv
-                                            a2 += SIMD[F32, 4](wp[w_base + 2 * w_step + kd]) * xv
-                                            a3 += SIMD[F32, 4](wp[w_base + 3 * w_step + kd]) * xv
-                            op.store(o_base + zd, a0)
-                            op.store(o_base + o_stride + zd, a1)
-                            op.store(o_base + 2 * o_stride + zd, a2)
-                            op.store(o_base + 3 * o_stride + zd, a3)
+                                            var xv = xp.unsafe_load[width=4](x_base + kd)
+                                            a0 += SIMD[F32, 4](wp[unsafe_offset=w_base + kd]) * xv
+                                            a1 += SIMD[F32, 4](wp[unsafe_offset=w_base + w_step + kd]) * xv
+                                            a2 += SIMD[F32, 4](wp[unsafe_offset=w_base + 2 * w_step + kd]) * xv
+                                            a3 += SIMD[F32, 4](wp[unsafe_offset=w_base + 3 * w_step + kd]) * xv
+                            op.unsafe_store(o_base + zd, a0)
+                            op.unsafe_store(o_base + o_stride + zd, a1)
+                            op.unsafe_store(o_base + 2 * o_stride + zd, a2)
+                            op.unsafe_store(o_base + 3 * o_stride + zd, a3)
                             zd += 4
                         vec_end = zd
                     # partial o-blocks (co % OU, incl. co < OU) still get a
@@ -156,7 +156,7 @@ struct Conv3d(Copyable, Movable):
                             vs = zd_lo
                             var zd = zd_lo
                             while zd + W <= zd_hi:
-                                var acc = SIMD[F32, W](bp[oo])
+                                var acc = SIMD[F32, W](bp[unsafe_offset=oo])
                                 for c in range(ci):
                                     for kh in range(k):
                                         var ih = zh - p + kh
@@ -169,14 +169,14 @@ struct Conv3d(Copyable, Movable):
                                             var x_base = (((b * ci + c) * h + ih) * w + iw) * d + zd - p
                                             var w_base = (((oo * ci + c) * k + kh) * k + kw) * k
                                             for kd in range(k):
-                                                acc += SIMD[F32, W](wp[w_base + kd]) * xp.load[width=W](x_base + kd)
-                                op.store(oo_base + zd, acc)
+                                                acc += SIMD[F32, W](wp[unsafe_offset=w_base + kd]) * xp.unsafe_load[width=W](x_base + kd)
+                                op.unsafe_store(oo_base + zd, acc)
                                 zd += W
                             ve = zd
                         for zd in range(od):
                             if (zd >= vec_start and zd < vec_end) or (zd >= vs and zd < ve):
                                 continue
-                            var acc: Float32 = bp[oo]
+                            var acc: Float32 = bp[unsafe_offset=oo]
                             for c in range(ci):
                                 for kh in range(k):
                                     var ih = zh * s - p + kh
@@ -191,10 +191,10 @@ struct Conv3d(Copyable, Movable):
                                             if idd < 0 or idd >= d:
                                                 continue
                                             acc += (
-                                                wp[(((oo * ci + c) * k + kh) * k + kw) * k + kd]
-                                                * xp[(((b * ci + c) * h + ih) * w + iw) * d + idd]
+                                                wp[unsafe_offset=(((oo * ci + c) * k + kh) * k + kw) * k + kd]
+                                                * xp[unsafe_offset=(((b * ci + c) * h + ih) * w + iw) * d + idd]
                                             )
-                            op[oo_base + zd] = acc
+                            op[unsafe_offset=oo_base + zd] = acc
 
         var n_items = n * n_ob
         var flops = n * co * oh * ow * od * ci * k * k * k

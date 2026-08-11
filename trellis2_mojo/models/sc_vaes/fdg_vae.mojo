@@ -41,7 +41,7 @@ def fdg_head(
         for c in range(3):
             if f.data[r * 7 + 3 + c] > 0:
                 intersected.data[r * 3 + c] = 1.0
-        # torch F.softplus default: x if x > 20 else log(1 + exp(x))
+        # Numerically stable softplus: x if x > 20 else log(1 + exp(x))
         var q = f.data[r * 7 + 6]
         if q > 20:
             quad.data[r] = q
